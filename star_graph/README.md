@@ -1,6 +1,6 @@
 # Star-graph experiments
 
-This code is heavily inspired by https://github.com/gregorbachmann/Next-Token-Failures, the official code base for Bachmann et al. 2024.
+This code is heavily inspired by [https://github.com/jinpz/q_sharp], the official code base for Zhou et al. 2025. The PITA training algorithm is a fork of the Q-# classifier, and can be run by changing the classifier files.
 
 ## Requirements
 The following packages are needed to run the code:
@@ -16,7 +16,7 @@ You can generate your own pre-training data with `python data/graphs.py` and you
     --batch_size 1024 --dataset graph --deg 2 --path 5 --num_nodes 50 \
     --model_ckpt <path_to_pretrained_model>
 
-For reproducibility, we also provide our datasets and checkpoints, which you can find in this [box link](https://cornell.box.com/s/ustn3954a5o3viohayvp6nr956kx8tfe). The data should be copied to `data/datasets/` and checkpoints should be copied to `checkpoints/` directory.
+For reproducibility, here's the link to the original checkpoints of all the baseline algorithms and the datasets used [box link](https://cornell.box.com/s/ustn3954a5o3viohayvp6nr956kx8tfe). The data should be copied to `data/datasets/` and checkpoints should be copied to `checkpoints/` directory.
 
 ## Usage
 
@@ -24,9 +24,12 @@ To pre-train a GPT-2 model with standard next-token prediction on a star graph w
 > python train.py --dataset graph --deg 2 --path 5 --num_nodes 50 --batch_size 256 --lr 0.00025 --epochs 30 --eval_every 1 --save_every 2 --model gpt2 --weight_decay 0.1 --eval_train --wandb_entity <fill_in> --use_wandb --seed 1337
 
 To train a GPT-2 classifier for CD or Q#, run the command
+> python train_classifier.py --dataset graph --deg 2 --path 5 --num_nodes 50 --batch_size 256 --lr 0.00025 --epochs 10 --eval_every 1 --save_every 1 --model gpt2 --weight_decay 0.1 --wandb_entity <fill_in> --use_wandb --seed 1337 --compile
+
+To train a GPT-2 classifier for PITA, run the command
 > python train_classifier_pref.py --dataset graph --deg 2 --path 5 --num_nodes 50 --batch_size 256 --lr 0.00025 --epochs 10 --eval_every 1 --save_every 1 --model gpt2 --weight_decay 0.1 --wandb_entity <fill_in> --use_wandb --seed 1337 --compile
 
-We can then use the classifier ckpt to run CD or Q#. Please see `scripts/evaluate.sh` for an example command.
+We can then use the classifier ckpt to run CD, Q# or PITA. Please see `scripts/evaluate.sh` for an example command.
 
 To post-train a GPT-2 model with REINFORCE, run the command
 > python train_reinforce.py --dataset graph --deg 2 --path 5 --num_nodes 50 --batch_size 256 --lr 1e-05 --epochs 10 --eval_every 1 --save_every 1 --piref_ckpt <path_to_pretrained_model> --model gpt2 --baseline 1 --weight_decay 0.1 --wandb_entity <fill_in> --use_wandb --seed 1337 --compile
