@@ -1,6 +1,6 @@
 # Star-graph experiments
 
-This code is heavily inspired by [https://github.com/jinpz/q_sharp], the official code base for Zhou et al. 2025. The PITA training algorithm is a fork of the Q-# classifier, and can be run by changing the classifier files.
+This code is heavily inspired by [https://github.com/jinpz/q_sharp], the official code base for Zhou et al. 2025. The PITA training algorithm for the star graph reasoning is a fork of the Q-# classifier, and can be run by changing the classifier files.
 
 ## Requirements
 The following packages are needed to run the code:
