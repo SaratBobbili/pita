@@ -150,7 +150,21 @@ tokenizer = AutoTokenizer.from_pretrained(ref_model_id)
 classifier_tokenizer = AutoTokenizer.from_pretrained(classifier_model_id)
 assert len(tokenizer) == len(classifier_tokenizer), "tokenizer vocab size mismatch"
 data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
-vocab_size = len(tokenizer)
+
+#Qwen related fix because the model has more outputs that tokenizer.
+model_loading_kwargs = {}
+if dtype == 'bfloat16':
+    model_loading_kwargs['torch_dtype'] = torch.bfloat16
+temp_model = AutoModelForCausalLM.from_pretrained(classifier_model_id, **model_loading_kwargs, device_map='cpu')
+lm_head_parameters = list(temp_model.lm_head.parameters())
+assert len(lm_head_parameters) == 1  # only weight
+lm_head_parameters = lm_head_parameters[0].data.to(device)
+print(lm_head_parameters.shape)
+vocab_size = lm_head_parameters.shape[0]
+print('vocab size', vocab_size)
+del temp_model
+torch.cuda.empty_cache()
+
 if tokenizer.pad_token is None:
     assert 'Llama-3' in ref_model_id
     tokenizer.pad_token = tokenizer.added_tokens_decoder[128002].content  # reserved special token 0
@@ -318,6 +332,8 @@ if args.classifier_type == 'Q':
         print('before loading score weight mean', classifier_model.score.weight.data.mean().item())
         print('original lm_head weight mean', lm_head_parameters[0].data.mean().item())
         lm_head_parameters = lm_head_parameters[0].data.to(device)
+
+        print(classifier_model.score.weight.data.shape, lm_head_parameters.shape)
         vocab_size = lm_head_parameters.shape[0]
         if loss_type in ["mle", "qr"]:
             classifier_model.score.weight.data = lm_head_parameters.repeat(1, args.num_atoms).view(
