@@ -239,7 +239,7 @@ for i in range(num_samples):
                                                                                 use_chat_template, device)
         generate_kwargs['output_scores'] = True
         generate_kwargs['return_dict_in_generate'] = True
-        current_outputs = generate_with_classifier_guidance(ref_model, tokenizer, logit_processor, current_inputs, generate_kwargs, True, False)
+        current_outputs = generate_with_classifier_guidance(ref_model, tokenizer, logit_processor, current_inputs, generate_kwargs, True, False, eta)
         current_outputs_id = current_outputs['sequences']
         current_outputs_text = tokenizer.batch_decode(current_outputs_id, skip_special_tokens=True)
         current_outputs['scores'] = tuple([e.cpu() for e in current_outputs['scores']])  # prevent OOM

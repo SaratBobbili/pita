@@ -42,12 +42,16 @@ def tokenize_with_chat_template(tokenizer, prompts, use_chat_template, device):
     return inputs, formatted_prompts
 
 
-def generate_with_classifier_guidance(ref_model, tokenizer, logit_processor, inputs, generate_kwargs, return_output_only, return_text):
+def generate_with_classifier_guidance(ref_model, tokenizer, logit_processor, inputs, generate_kwargs, return_output_only, return_text, eta):
     # we need to initialize the logit processor every time we generate
     logit_processor.reset_classifier_state()
     logit_processors = LogitsProcessorList([logit_processor])
-    with torch.no_grad():
-        outputs = ref_model.generate(**inputs, logits_processor=logit_processors, pad_token_id=tokenizer.pad_token_id, **generate_kwargs)
+    if eta !=0:
+        with torch.no_grad():
+            outputs = ref_model.generate(**inputs, logits_processor=logit_processors, pad_token_id=tokenizer.pad_token_id, **generate_kwargs)
+    else:
+        with torch.no_grad():
+            outputs = ref_model.generate(**inputs, pad_token_id=tokenizer.pad_token_id, **generate_kwargs)
     if return_output_only:
         if isinstance(outputs, dict) and 'sequences' in outputs:
             outputs['sequences'] = outputs['sequences'][:, inputs['input_ids'].shape[1]:]
