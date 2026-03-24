@@ -7,7 +7,7 @@ from torch.nn import BCEWithLogitsLoss, MSELoss
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import LogitsProcessor
-from transformers.models.llama.modeling_llama import _prepare_4d_causal_attention_mask_with_cache_position
+from transformers.models.qwen2.modeling_qwen2 import _prepare_4d_causal_attention_mask_with_cache_position
 
 
 class CustomModelForSequenceClassification(PreTrainedModel):

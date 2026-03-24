@@ -10,10 +10,12 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, set_seed
 import copy
 from accuracy_utils import sample_match_strict, process_sample, numeric_or_symbolic_correctness, \
     equivalence_partition, compute_majority_vote_correct
-from qwen_classifier import CustomModelForSequenceClassification, CustomValueGuidedLogitProcessor
+from classifier import CustomLlamaForSequenceClassification, CustomValueGuidedLogitProcessor
 from utils import read_jsonl, tokenize_with_chat_template, generate_with_classifier_guidance, write_jsonl, \
     get_average_reward, get_parent_directory, resolve_dict_value
 import utils
+import time
+
 
 parser = argparse.ArgumentParser(description='')
 parser.add_argument('--ref_model_id', default=None, type=str,
@@ -59,6 +61,8 @@ parser.add_argument('--scale_reward', default=None, type=float, help='scale rewa
 args = parser.parse_args()
 args_dict = vars(args)
 print(args_dict)
+
+start_time = time.time()
 
 with open(os.path.join(get_parent_directory(args.classifier_ckpt_path), 'args.json'), 'r') as f:
     training_args_dict = json.load(f)
@@ -116,21 +120,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tokenizer = AutoTokenizer.from_pretrained(ref_model_id)
 classifier_tokenizer = AutoTokenizer.from_pretrained(classifier_model_id)
 assert len(tokenizer) == len(classifier_tokenizer), "tokenizer vocab size mismatch"
-
-#Qwen related fix because the model has more outputs that tokenizer.
-model_loading_kwargs = {}
-if dtype == 'bfloat16':
-    model_loading_kwargs['torch_dtype'] = torch.bfloat16
-temp_model = AutoModelForCausalLM.from_pretrained(classifier_model_id, **model_loading_kwargs, device_map='cpu')
-lm_head_parameters = list(temp_model.lm_head.parameters())
-assert len(lm_head_parameters) == 1  # only weight
-lm_head_parameters = lm_head_parameters[0].data.to(device)
-print(lm_head_parameters.shape)
-vocab_size = lm_head_parameters.shape[0]
-print('vocab size', vocab_size)
-del temp_model
-torch.cuda.empty_cache()
-
+vocab_size = len(tokenizer)
 if tokenizer.pad_token is None:
     assert 'Llama-3' in ref_model_id
     tokenizer.pad_token = tokenizer.added_tokens_decoder[128002].content  # reserved special token 0
@@ -184,7 +174,7 @@ model_loading_kwargs = {}
 if dtype == 'bfloat16':
     model_loading_kwargs['torch_dtype'] = torch.bfloat16
 ref_model = AutoModelForCausalLM.from_pretrained(ref_model_id, **model_loading_kwargs, device_map=device)
-classifier_model = CustomModelForSequenceClassification.from_pretrained(classifier_ckpt_path, **model_loading_kwargs,
+classifier_model = CustomLlamaForSequenceClassification.from_pretrained(classifier_ckpt_path, **model_loading_kwargs,
                                                                         num_labels=vocab_size, classifier_type=classifier_type,
                                                                         loss_type=loss_type, use_bias=use_bias,
                                                                         device_map=device, num_atoms=num_atoms,
@@ -211,6 +201,10 @@ for j in range(len(inference_eval_examples)):
     if max_prompt_length != -1 and num_toks > max_prompt_length:
         skip_problems.append(j)
 
+# Initialize precise profiling counters
+total_input_tokens = 0
+total_output_tokens = 0
+total_forward_passes = 0
 
 for i in range(num_samples):
     repeat_index = i
@@ -237,119 +231,113 @@ for i in range(num_samples):
         current_prompts = [data_to_infer[k]['prompt'] for k in range(batch_start_index, batch_end_index)]
         current_inputs, current_formatted_prompts = tokenize_with_chat_template(tokenizer, current_prompts,
                                                                                 use_chat_template, device)
+        
+        # Count input tokens for this batch
+        batch_input_tokens = current_inputs['input_ids'].numel()
+        total_input_tokens += batch_input_tokens
+        
         generate_kwargs['output_scores'] = True
         generate_kwargs['return_dict_in_generate'] = True
-        #current_outputs = generate_with_classifier_guidance(ref_model, tokenizer, logit_processor, current_inputs, generate_kwargs, True, False, eta)
-        current_outputs = ref_model.generate(current_inputs, pad_token_id=tokenizer.pad_token_id, **generate_kwargs)
+        current_outputs = generate_with_classifier_guidance(ref_model, tokenizer, logit_processor, current_inputs, generate_kwargs, True, False)
         current_outputs_id = current_outputs['sequences']
         current_outputs_text = tokenizer.batch_decode(current_outputs_id, skip_special_tokens=True)
+        
+        # Count output tokens for this batch (subtract input length to get only generated tokens)
+        batch_output_tokens = current_outputs_id.numel() - batch_input_tokens
+        total_output_tokens += batch_output_tokens
+        
+        # Count forward passes (1 per generated token per sequence in batch)
+        batch_size_actual = current_outputs_id.shape[0]
+        generated_length = current_outputs_id.shape[1] - current_inputs['input_ids'].shape[1]
+        total_forward_passes += batch_size_actual * generated_length
+        
         current_outputs['scores'] = tuple([e.cpu() for e in current_outputs['scores']])  # prevent OOM
         aligned_model_scores = torch.stack(current_outputs['scores'], dim=1).float()
         del current_outputs
         torch.cuda.empty_cache()
 
         # also evaluate the KL divergence w.r.t. ref model
-        token_kl_list = []
-        for k in range(0, len(batch_indices), kl_batch_size):
-            # compute kl in batches since kl computation is memory intensive
-            # we want KL(pi_aligned || pi_ref)
-            output_attention_mask = (current_outputs_id[k:k + kl_batch_size] != tokenizer.pad_token_id).long()
-            concat_input_ids = torch.cat([current_inputs['input_ids'][k:k + kl_batch_size], current_outputs_id[k:k + kl_batch_size]], dim=1)
-            concat_attention_mask = torch.cat([current_inputs['attention_mask'][k:k + kl_batch_size], output_attention_mask], dim=1)
-            concat_inputs = {'input_ids': concat_input_ids, 'attention_mask': concat_attention_mask}
-            ref_model_output = ref_model(**concat_inputs)
-            ref_model_output_logits = ref_model_output.logits[:, current_inputs['input_ids'].shape[1] - 1:-1]
-            ref_model_output_logits = ref_model_output_logits.float() / temperature
-            del ref_model_output
-            torch.cuda.empty_cache()
+        # token_kl_list = []
+        # for k in range(0, len(batch_indices), kl_batch_size):
+        #     # compute kl in batches since kl computation is memory intensive
+        #     # we want KL(pi_aligned || pi_ref)
+        #     output_attention_mask = (current_outputs_id[k:k + kl_batch_size] != tokenizer.pad_token_id).long()
+        #     concat_input_ids = torch.cat([current_inputs['input_ids'][k:k + kl_batch_size], current_outputs_id[k:k + kl_batch_size]], dim=1)
+        #     concat_attention_mask = torch.cat([current_inputs['attention_mask'][k:k + kl_batch_size], output_attention_mask], dim=1)
+        #     concat_inputs = {'input_ids': concat_input_ids, 'attention_mask': concat_attention_mask}
+        #     ref_model_output = ref_model(**concat_inputs)
+        #     ref_model_output_logits = ref_model_output.logits[:, current_inputs['input_ids'].shape[1] - 1:-1]
+        #     ref_model_output_logits = ref_model_output_logits.float() / temperature
+        #     del ref_model_output
+        #     torch.cuda.empty_cache()
 
-            cur_token_kl = utils.kl_divergence(aligned_model_scores[k:k+kl_batch_size].to(ref_model_output_logits.device), ref_model_output_logits)
-            cur_token_kl = cur_token_kl * output_attention_mask
-            token_kl_list.append(cur_token_kl)
-            torch.cuda.empty_cache()
+        #     cur_token_kl = utils.kl_divergence(aligned_model_scores[k:k+kl_batch_size].to(ref_model_output_logits.device), ref_model_output_logits)
+        #     cur_token_kl = cur_token_kl * output_attention_mask
+        #     token_kl_list.append(cur_token_kl)
+        #     torch.cuda.empty_cache()
 
-            del ref_model_output_logits
-            torch.cuda.empty_cache()
+        #     del ref_model_output_logits
+        #     torch.cuda.empty_cache()
 
-        token_kl = torch.cat(token_kl_list, dim=0)
-        traj_kl = token_kl.sum(dim=1)
-        del aligned_model_scores
-        torch.cuda.empty_cache()
+        # token_kl = torch.cat(token_kl_list, dim=0)
+        # traj_kl = token_kl.sum(dim=1)
+        # del aligned_model_scores
+        # torch.cuda.empty_cache()
 
-        # save the results
-        for k in range(len(batch_indices)):
-            original_problem_id = train_eval_problems_d[data_to_infer[batch_indices[k]]['problem']]['id']
-            eval_problem_id = original_id_to_eval_id_d[original_problem_id]
-            current_output_path = os.path.join(individual_eval_inference_output_dir, f'{eval_problem_id}_r{repeat_index}.json')
-            assert not os.path.exists(current_output_path), f"expect {current_output_path} to not exist"
-            with open(current_output_path, 'w') as f:
-                json.dump({
-                    'input_ids': current_inputs['input_ids'][k].cpu().tolist(),
-                    'output_ids': current_outputs_id[k].cpu().tolist(),
-                    'prediction': current_outputs_text[k],
-                    'token_kl': token_kl[k].cpu().tolist(),
-                    'traj_kl': traj_kl[k].item(),
-                }, f)
+        # # save the results
+        # for k in range(len(batch_indices)):
+        #     original_problem_id = train_eval_problems_d[data_to_infer[batch_indices[k]]['problem']]['id']
+        #     eval_problem_id = original_id_to_eval_id_d[original_problem_id]
+        #     current_output_path = os.path.join(individual_eval_inference_output_dir, f'{eval_problem_id}_r{repeat_index}.json')
+        #     assert not os.path.exists(current_output_path), f"expect {current_output_path} to not exist"
+        #     with open(current_output_path, 'w') as f:
+        #         json.dump({
+        #             'input_ids': current_inputs['input_ids'][k].cpu().tolist(),
+        #             'output_ids': current_outputs_id[k].cpu().tolist(),
+        #             'prediction': current_outputs_text[k],
+        #             'token_kl': token_kl[k].cpu().tolist(),
+        #             'traj_kl': traj_kl[k].item(),
+        #         }, f)
 
-print('done inference, now combine results')
-
-
-
-for i in range(len(inference_eval_examples)):
-    if i in skip_problems:
-        continue
-
-    for j in range(num_samples):
-        current_output_path = os.path.join(individual_eval_inference_output_dir, f'{i}_r{j}.json')
-        assert os.path.exists(current_output_path), f"expect {current_output_path} to exist"
-        if j == 0:
-            inference_eval_examples[i][prediction_key] = []
-            inference_eval_examples[i]['token_kl'] = []
-            inference_eval_examples[i]['traj_kl'] = []
-
-        with open(current_output_path, 'r') as f:
-            current_prediction_data = json.load(f)
-        inference_eval_examples[i][prediction_key].append(current_prediction_data['prediction'])
-        inference_eval_examples[i]['token_kl'].append(current_prediction_data['token_kl'])
-        inference_eval_examples[i]['traj_kl'].append(current_prediction_data['traj_kl'])
-
-print('done combining results, now evaluate')
+print('done inference')
 
 
+total_wall_time = time.time() - start_time  # in seconds
+gpu_hours = total_wall_time / 3600
+
+# Precise profiling calculations including both models
+ref_model_params = sum(p.numel() for p in ref_model.parameters() if p.requires_grad)
+classifier_model_params = sum(p.numel() for p in classifier_model.parameters() if p.requires_grad)
+total_model_params = ref_model_params + classifier_model_params
+total_tokens_processed = total_input_tokens + total_output_tokens
+actual_tokens_per_step = total_tokens_processed / max(1, total_forward_passes)
+
+# More accurate FLOPs calculation including both ref model and classifier model
+# For autoregressive generation: FLOPs = 2 * num_params * total_tokens_processed
+# (factor of 2 accounts for forward pass matrix multiplications)
+# Both models process tokens during generation (ref model generates, classifier guides)
+ref_model_flops = 2 * ref_model_params * total_tokens_processed
+classifier_model_flops = 2 * classifier_model_params * total_tokens_processed
+total_flops = ref_model_flops + classifier_model_flops
+
+stats_path = os.path.join(output_dir, "inference_stats.json")
+with open(stats_path, "w") as f:
+    json.dump({
+        "wall_clock_time_sec": total_wall_time,
+        "gpu_hours": gpu_hours,
+        "total_flops_est": total_flops,
+        "ref_model_flops": ref_model_flops,
+        "classifier_model_flops": classifier_model_flops,
+        "ref_model_params": ref_model_params,
+        "classifier_model_params": classifier_model_params,
+        "total_model_params": total_model_params,
+        "tokens_per_step": actual_tokens_per_step,
+        "steps": total_forward_passes,
+        "total_input_tokens": total_input_tokens,
+        "total_output_tokens": total_output_tokens,
+        "total_tokens_processed": total_tokens_processed,
+    }, f, indent=2)
+
+print(f"Training stats written to {stats_path}")
 
 
-for i in range(len(inference_eval_examples)):
-    if i in skip_problems:
-        continue
-    solution_or_answer = str(inference_eval_examples[i][answer_key])
-    if dataset_type == 'MATH':
-        # process answers a bit
-        answer_processed = process_sample(solution_or_answer, None, extract_last_occurrence)
-    else:
-        answer_processed = solution_or_answer
-    all_samples = inference_eval_examples[i][prediction_key]
-    all_processed_predictions = [process_sample(sample, None, extract_last_occurrence) for sample in all_samples]
-    predictions_correctness = [match_fn(sample, answer_processed) if sample is not None else False for sample in all_processed_predictions]
-    inference_eval_examples[i]['predictions_correctness'] = predictions_correctness
-    pass_at_k = any(predictions_correctness)
-    sample_partition = equivalence_partition(all_processed_predictions, match_fn)
-    majority_vote_correct = compute_majority_vote_correct(all_processed_predictions, predictions_correctness, sample_partition, strict_tie_breaking=False)
-    inference_eval_examples[i]['majority_vote_correct'] = majority_vote_correct
-    inference_eval_examples[i]['pass_at_k'] = pass_at_k
-
-write_jsonl(inference_eval_examples, os.path.join(output_dir, 'inference_eval_results_eta_{0}_top_k_{1}_temp_{2}.jsonl'.format(eta, top_k, temperature)))
-
-# calculate aggregated accuracy
-single_sample_accuracy_list = get_average_reward(inference_eval_examples, 'predictions_correctness', 100)
-single_sample_accuracy_mean = np.mean(single_sample_accuracy_list)
-majority_vote_accuracy_mean = np.mean([example['majority_vote_correct'] for example in inference_eval_examples])
-pass_k_accuracy_mean = np.mean([example['pass_at_k'] for example in inference_eval_examples])
-
-with open(os.path.join(output_dir, 'reward_stats_eta_{0}_top_k_{1}_temp_{2}.json'.format(eta, top_k, temperature)), 'w') as f:
-    json.dump({'single_sample_accuracy_mean': single_sample_accuracy_mean,
-            'majority_vote_accuracy_mean': majority_vote_accuracy_mean,
-            'pass_k_accuracy_mean': pass_k_accuracy_mean}, f)
-
-print('single_sample_accuracy_mean', single_sample_accuracy_mean)
-print('majority_vote_accuracy_mean', majority_vote_accuracy_mean)
-print('pass_k_accuracy_mean', pass_k_accuracy_mean)
