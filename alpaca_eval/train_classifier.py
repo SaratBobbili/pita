@@ -304,15 +304,15 @@ else:
 model_loading_kwargs = {}
 if dtype == 'bfloat16':
     model_loading_kwargs['torch_dtype'] = torch.bfloat16
-# if args.attention_dropout is not None:
-#     model_loading_kwargs['attention_dropout'] = args.attention_dropout
+if args.attention_dropout is not None:
+    model_loading_kwargs['attention_dropout'] = args.attention_dropout
 classifier_model = CustomLlamaForSequenceClassification.from_pretrained(classifier_ckpt_path, **model_loading_kwargs,
                                                                         num_labels=vocab_size,
                                                                         loss_type=loss_type, use_bias=use_bias,
                                                                         classifier_type=args.classifier_type,
                                                                         device_map=device, num_atoms=args.num_atoms,
-                                                                        V_min=args.V_min, V_max=args.V_max)#,
-                                                                        # classifier_dropout=args.classifier_dropout)
+                                                                        V_min=args.V_min, V_max=args.V_max,
+                                                                        classifier_dropout=args.classifier_dropout)
 print("Loaded classifier model")
 
 if args.classifier_type == 'Q':
