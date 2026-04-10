@@ -273,7 +273,7 @@ class CustomValueGuidedLogitProcessor(LogitsProcessor):
         assert self.inference_mode in ['expectation', 'bernoulli', 'disabled']
         self.cd_baseline = cd_baseline
         self.value_classifier = value_classifier
-        self.loss_type = value_classifier.loss_type
+        self.loss_type = 'bce' #value_classifier.loss_type
         self.use_cache = use_cache
         self.classifier_state = {"input_ids": None, "attention_mask": None, "use_cache": use_cache,
                                  "past_key_values": None, "first_pass": True}

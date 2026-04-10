@@ -17,19 +17,21 @@ echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 # module load cuda/12.1
 # source ~/.bashrc && conda activate verl-tool-env
 
-python train_classifier_qwen.py \
-  --ref_model_id Qwen/Qwen2.5-1.5B-Instruct \
-  --classifier_model_id Qwen/Qwen2.5-1.5B-Instruct \
-  --original_problems_path dataset/gsm8k_train.jsonl \
-  --train_eval_save_path dataset/gsm8k_train_eval.json \
-  --init_mode reuse \
-  --inference_mode expectation \
-  --loss_type bce \
-  --dataset_type gsm8k \
-  --data_paths collected_data/Qwen_7b_gsm8k/Qwen_7b_gsm8k_round1.jsonl \
-  --drop_no_variation 1 \
-  --eta 1 \
-  --output_dir checkpoints/Qwen_1_5b_gsm8k/ \
-  --num_epochs 5
+# python train_classifier_qwen.py \
+#   --ref_model_id Qwen/Qwen2.5-1.5B-Instruct \
+#   --classifier_model_id Qwen/Qwen2.5-1.5B-Instruct \
+#   --original_problems_path dataset/gsm8k_train.jsonl \
+#   --train_eval_save_path dataset/gsm8k_train_eval.json \
+#   --init_mode reuse \
+#   --inference_mode expectation \
+#   --loss_type bce \
+#   --dataset_type gsm8k \
+#   --data_paths collected_data/Qwen_7b_gsm8k/Qwen_7b_gsm8k_round1.jsonl \
+#   --drop_no_variation 1 \
+#   --eta 1 \
+#   --output_dir checkpoints/Qwen_1_5b_gsm8k/ \
+#   --num_epochs 5
+
+ python eval_ckpt.py --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/ckpt_35000_round2/ --eta 1 --data_path dataset/gsm8k_test.jsonl --train_eval_save_path dataset/gsm8k_test_eval.json
 
 

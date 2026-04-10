@@ -11,16 +11,16 @@ import copy
 from accuracy_utils import sample_match_strict, process_sample, numeric_or_symbolic_correctness, \
     equivalence_partition, compute_majority_vote_correct
 from qwen_classifier import CustomModelForSequenceClassification, CustomValueGuidedLogitProcessor
-from utils import read_jsonl, tokenize_with_chat_template, generate_with_classifier_guidance, write_jsonl, \
-    get_average_reward, get_parent_directory, resolve_dict_value
-import utils
+from utils_qwen import read_jsonl, tokenize_with_chat_template, generate_with_classifier_guidance, write_jsonl, \
+    get_average_reward, resolve_dict_value
+import utils_qwen as utils
 
 parser = argparse.ArgumentParser(description='')
 parser.add_argument('--ref_model_id', default=None, type=str,
                     help='reference model id meta-llama/Llama-3.1-8B-Instruct')
 parser.add_argument('--classifier_type', default=None, type=str, help='whether to train Q (bottlenecked) or V classifier.')
 parser.add_argument('--classifier_model_id', default=None, type=str, help='classifier model id (for tokenizer, reuse weights)')
-parser.add_argument('--classifier_ckpt_path', required=True, type=str,
+parser.add_argument('--classifier_ckpt_path', required=False, type=str,
                     help='a ckpt path')
 parser.add_argument('--inference_mode', default=None, type=str,
                     help='inference mode supported by the classifier. First round does not matter')
@@ -60,7 +60,7 @@ args = parser.parse_args()
 args_dict = vars(args)
 print(args_dict)
 
-with open(os.path.join(get_parent_directory(args.classifier_ckpt_path), 'args.json'), 'r') as f:
+with open(os.path.join(args.classifier_ckpt_path, 'args.json'), 'r') as f:
     training_args_dict = json.load(f)
 print(training_args_dict)
 
@@ -184,11 +184,12 @@ model_loading_kwargs = {}
 if dtype == 'bfloat16':
     model_loading_kwargs['torch_dtype'] = torch.bfloat16
 ref_model = AutoModelForCausalLM.from_pretrained(ref_model_id, **model_loading_kwargs, device_map=device)
-classifier_model = CustomModelForSequenceClassification.from_pretrained(classifier_ckpt_path, **model_loading_kwargs,
-                                                                        num_labels=vocab_size, classifier_type=classifier_type,
-                                                                        loss_type=loss_type, use_bias=use_bias,
-                                                                        device_map=device, num_atoms=num_atoms,
-                                                                        V_min=V_min, V_max=V_max)
+classifier_model = AutoModelForCausalLM.from_pretrained(classifier_model_id, **model_loading_kwargs, device_map=device)
+# classifier_model = CustomModelForSequenceClassification.from_pretrained(classifier_ckpt_path, **model_loading_kwargs,
+#                                                                         num_labels=vocab_size, classifier_type=classifier_type,
+#                                                                         loss_type=loss_type, use_bias=use_bias,
+#                                                                         device_map=device, num_atoms=num_atoms,
+#                                                                         V_min=V_min, V_max=V_max)
 
 ref_model.eval()
 classifier_model.eval()
@@ -240,8 +241,8 @@ for i in range(num_samples):
         generate_kwargs['output_scores'] = True
         generate_kwargs['return_dict_in_generate'] = True
         #current_outputs = generate_with_classifier_guidance(ref_model, tokenizer, logit_processor, current_inputs, generate_kwargs, True, False, eta)
-        current_outputs = ref_model.generate(current_inputs, pad_token_id=tokenizer.pad_token_id, **generate_kwargs)
-        current_outputs_id = current_outputs['sequences']
+        current_outputs = ref_model.generate(**current_inputs, pad_token_id=tokenizer.pad_token_id, **generate_kwargs)
+        current_outputs_id = current_outputs['sequences'][:, current_inputs['input_ids'].shape[1]:]
         current_outputs_text = tokenizer.batch_decode(current_outputs_id, skip_special_tokens=True)
         current_outputs['scores'] = tuple([e.cpu() for e in current_outputs['scores']])  # prevent OOM
         aligned_model_scores = torch.stack(current_outputs['scores'], dim=1).float()
