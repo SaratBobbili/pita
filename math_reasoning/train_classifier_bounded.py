@@ -17,7 +17,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, set_seed, DataColl
 
 import utils
 from accuracy_utils import sample_match_strict, numeric_or_symbolic_correctness
-from classifier import CustomLlamaForSequenceClassification
+from classifier_bounded import CustomLlamaForSequenceClassification
 from utils import read_jsonl, create_classifier_data, CustomClassifierDataset, calculate_explained_variance, \
     calculate_r2, DynamicBatchSampler, calculate_mle_stats, custom_collate_fn
 from functools import partial
@@ -96,6 +96,10 @@ parser.add_argument('--sync_cuda_timing', default=1, type=int,
                     help='synchronize CUDA before/after timing')
 parser.add_argument('--efficiency_log_dir', default=None, type=str,
                     help='directory for efficiency logs; defaults to output_dir/efficiency')
+parser.add_argument('--log_hidden_norm_stats', default=1, type=int,
+                    help='whether to track final-layer hidden-state norm stats for classifier and reference models')
+parser.add_argument('--hidden_norm_log_every', default=1, type=int,
+                    help='number of optimizer steps per hidden-state norm logging window')
 
 args = parser.parse_args()
 print(socket.gethostname())
@@ -144,8 +148,11 @@ save_raw_efficiency = bool(args.save_raw_efficiency)
 efficiency_log_every = args.efficiency_log_every
 sync_cuda_timing = bool(args.sync_cuda_timing)
 efficiency_log_dir = args.efficiency_log_dir
+log_hidden_norm_stats = bool(args.log_hidden_norm_stats)
+hidden_norm_log_every = args.hidden_norm_log_every
 max_optimizer_steps = args.max_optimizer_steps
 assert efficiency_log_every >= 1, 'efficiency_log_every must be >= 1'
+assert hidden_norm_log_every >= 1, 'hidden_norm_log_every must be >= 1'
 assert max_optimizer_steps == -1 or max_optimizer_steps >= 1, 'max_optimizer_steps must be -1 or >= 1'
 
 if classifier_ckpt_path is None:
@@ -326,6 +333,63 @@ classifier_model = CustomLlamaForSequenceClassification.from_pretrained(classifi
                                                                         device_map=device, num_atoms=args.num_atoms,
                                                                         V_min=args.V_min, V_max=args.V_max)
 print("Loaded classifier model")
+if log_hidden_norm_stats:
+    ref_model = AutoModelForCausalLM.from_pretrained(ref_model_id, **model_loading_kwargs, device_map=device)
+    ref_model.eval()
+    ref_model.requires_grad_(False)
+    print("Loaded reference model for hidden-state norm logging")
+else:
+    ref_model = None
+
+
+def init_norm_stats(device):
+    return {
+        'count': torch.tensor(0.0, device=device),
+        'sum': torch.tensor(0.0, device=device),
+        'sum_sq': torch.tensor(0.0, device=device),
+        'min': torch.tensor(float('inf'), device=device),
+        'max': torch.tensor(float('-inf'), device=device),
+    }
+
+
+def update_norm_stats(stats, hidden_states, attention_mask):
+    # hidden_states: [bs, seqlen, hidden_dim], attention_mask: [bs, seqlen]
+    norms = torch.linalg.vector_norm(hidden_states.float(), dim=-1)
+    norms = norms[attention_mask.bool()]
+    if norms.numel() == 0:
+        return
+    stats['count'] += float(norms.numel())
+    stats['sum'] += norms.sum()
+    stats['sum_sq'] += (norms * norms).sum()
+    stats['min'] = torch.minimum(stats['min'], norms.min())
+    stats['max'] = torch.maximum(stats['max'], norms.max())
+
+
+def reduce_norm_stats(accelerator, stats):
+    packed = torch.stack([stats['count'], stats['sum'], stats['sum_sq'], stats['min'], stats['max']])
+    gathered = accelerator.gather(packed)
+    if gathered.dim() == 1:
+        gathered = gathered.view(-1, packed.numel())
+    counts = gathered[:, 0]
+    total_count = counts.sum()
+    if total_count.item() == 0:
+        return None
+    total_sum = gathered[:, 1].sum()
+    total_sum_sq = gathered[:, 2].sum()
+    valid = counts > 0
+    total_min = gathered[valid, 3].min()
+    total_max = gathered[valid, 4].max()
+    mean = total_sum / total_count
+    variance = torch.clamp(total_sum_sq / total_count - mean * mean, min=0.0)
+    std = torch.sqrt(variance)
+    return {
+        'count': float(total_count.item()),
+        'mean': float(mean.item()),
+        'variance': float(variance.item()),
+        'std': float(std.item()),
+        'min': float(total_min.item()),
+        'max': float(total_max.item()),
+    }
 num_trainable_params = utils.count_parameters(classifier_model, trainable_only=True)
 num_total_params = utils.count_parameters(classifier_model, trainable_only=False)
 
@@ -429,6 +493,7 @@ for epoch in range(num_epochs):
     accum_loss_tokens_local = 0.0
     accum_flops_trainable_local = 0.0
     accum_flops_total_local = 0.0
+    train_hidden_norm_stats = {'classifier': init_norm_stats(device), 'reference': init_norm_stats(device)}
     optimizer_step_start_time = None
     for batch_input_data in bar:
         if optimizer_step_start_time is None:
@@ -448,8 +513,18 @@ for epoch in range(num_epochs):
                                    attention_mask=batch_input_data['attention_mask'],
                                    labels=batch_input_data['rewards'], loss_mask=batch_input_data['loss_mask'],
                                    loss_weights=batch_input_data['loss_weights'])
+        if log_hidden_norm_stats:
+            update_norm_stats(train_hidden_norm_stats['classifier'], outputs.hidden_states[0],
+                              batch_input_data['attention_mask'])
+            with torch.no_grad():
+                ref_hidden_states = ref_model.model(input_ids=batch_input_data['input_ids'],
+                                                    attention_mask=batch_input_data['attention_mask'],
+                                                    return_dict=True).last_hidden_state
+            update_norm_stats(train_hidden_norm_stats['reference'], ref_hidden_states, batch_input_data['attention_mask'])
         loss = outputs.loss / gradient_accumulation_step  # normalize for grad accumulation
         del batch_input_data, outputs
+        if log_hidden_norm_stats:
+            del ref_hidden_states
         torch.cuda.empty_cache()
 
         accelerator.backward(loss)
@@ -469,12 +544,36 @@ for epoch in range(num_epochs):
             optimizer_step_wall_sec = time.time() - optimizer_step_start_time
 
             elapsed_time = time.time() - start_time
-            run.log({
+            train_log_payload = {
                 'Training Loss': accelerator.gather(accumulated_loss).mean(),
                 'Learning Rate': scheduler.get_last_lr()[0],
                 'Steps per Min': global_step / (elapsed_time / 60),
                 'Gradient Norm': accelerator.gather(grad_norm).mean(),
-            }, step=global_step)
+            }
+            hidden_norm_stats_to_save = {}
+            if log_hidden_norm_stats and (optimizer_step_idx + 1) % hidden_norm_log_every == 0:
+                classifier_hidden_stats = reduce_norm_stats(accelerator, train_hidden_norm_stats['classifier'])
+                reference_hidden_stats = reduce_norm_stats(accelerator, train_hidden_norm_stats['reference'])
+                if classifier_hidden_stats is not None:
+                    train_log_payload.update({
+                        'Train Classifier Hidden Norm Mean': classifier_hidden_stats['mean'],
+                        'Train Classifier Hidden Norm Variance': classifier_hidden_stats['variance'],
+                        'Train Classifier Hidden Norm Std': classifier_hidden_stats['std'],
+                        'Train Classifier Hidden Norm Min': classifier_hidden_stats['min'],
+                        'Train Classifier Hidden Norm Max': classifier_hidden_stats['max'],
+                    })
+                    hidden_norm_stats_to_save['classifier'] = classifier_hidden_stats
+                if reference_hidden_stats is not None:
+                    train_log_payload.update({
+                        'Train Reference Hidden Norm Mean': reference_hidden_stats['mean'],
+                        'Train Reference Hidden Norm Variance': reference_hidden_stats['variance'],
+                        'Train Reference Hidden Norm Std': reference_hidden_stats['std'],
+                        'Train Reference Hidden Norm Min': reference_hidden_stats['min'],
+                        'Train Reference Hidden Norm Max': reference_hidden_stats['max'],
+                    })
+                    hidden_norm_stats_to_save['reference'] = reference_hidden_stats
+                train_hidden_norm_stats = {'classifier': init_norm_stats(device), 'reference': init_norm_stats(device)}
+            run.log(train_log_payload, step=global_step)
             optimizer_step_idx += 1
             scalar_device = loss.device
             global_examples = accelerator.gather(
@@ -510,6 +609,7 @@ for epoch in range(num_epochs):
                         'learning_rate': float(scheduler.get_last_lr()[0]),
                         'gradient_norm': float(accelerator.gather(grad_norm).mean().item()),
                         'train_loss_accumulated': float(accelerator.gather(accumulated_loss).mean().item()),
+                        'hidden_norm_stats': hidden_norm_stats_to_save,
                     })
             accumulated_loss = torch.tensor(0.0).to(device)
             accum_examples_local = 0.0
@@ -534,6 +634,10 @@ for epoch in range(num_epochs):
             eval_predictions = {'id': [], 'ood': []}
             eval_labels = {'id': [], 'ood': []}
             eval_stats = {'id': [], 'ood': []}
+            eval_hidden_norm_stats = {
+                'id': {'classifier': init_norm_stats(device), 'reference': init_norm_stats(device)},
+                'ood': {'classifier': init_norm_stats(device), 'reference': init_norm_stats(device)},
+            }
             eval_counts = {'id': {'examples': 0.0, 'tokens': 0.0, 'loss_tokens': 0.0},
                            'ood': {'examples': 0.0, 'tokens': 0.0, 'loss_tokens': 0.0}}
             with torch.no_grad():
@@ -563,6 +667,14 @@ for epoch in range(num_epochs):
                                                    labels=batch_input_data['rewards'],
                                                    loss_mask=batch_input_data['loss_mask'],
                                                    loss_weights=batch_input_data['loss_weights'])
+                        if log_hidden_norm_stats:
+                            update_norm_stats(eval_hidden_norm_stats[eval_key]['classifier'], outputs.hidden_states[0],
+                                              batch_input_data['attention_mask'])
+                            ref_hidden_states = ref_model.model(input_ids=batch_input_data['input_ids'],
+                                                                attention_mask=batch_input_data['attention_mask'],
+                                                                return_dict=True).last_hidden_state
+                            update_norm_stats(eval_hidden_norm_stats[eval_key]['reference'], ref_hidden_states,
+                                              batch_input_data['attention_mask'])
                         loss = outputs.loss
                         eval_losses[eval_key].append(loss)
                         cur_predictions = unwrapped_classifier_model.calculate_predictions(outputs.logits)
@@ -581,6 +693,8 @@ for epoch in range(num_epochs):
                             eval_stats[eval_key].append(mle_stats)
 
                         del batch_input_data, outputs
+                        if log_hidden_norm_stats:
+                            del ref_hidden_states
                         torch.cuda.empty_cache()
 
             eval_losses = {k: torch.mean(accelerator.gather(torch.tensor(v))) for k, v in eval_losses.items()}
@@ -598,7 +712,7 @@ for epoch in range(num_epochs):
             eval_predictions = flattened_predictions
             eval_labels = flattened_labels
             eval_stats = flattened_stats
-            run.log({'ID Eval Loss': eval_losses['id'],
+            eval_log_payload = {'ID Eval Loss': eval_losses['id'],
                      'ID Eval Explained Variance': calculate_explained_variance(eval_predictions['id'],
                                                                                 eval_labels['id']),
                      'ID Eval R^2': calculate_r2(eval_predictions['id'], eval_labels['id']),
@@ -611,7 +725,23 @@ for epoch in range(num_epochs):
                      'OOD Eval R^2': calculate_r2(eval_predictions['ood'], eval_labels['ood']),
                      'OOD Eval Prediction Min': torch.min(eval_predictions['ood']),
                      'OOD Eval Prediction Max': torch.max(eval_predictions['ood']),
-                     'OOD Eval Prediction Mean': torch.mean(eval_predictions['ood'])}, step=global_step)
+                     'OOD Eval Prediction Mean': torch.mean(eval_predictions['ood'])}
+            eval_hidden_stats_for_efficiency = {}
+            if log_hidden_norm_stats:
+                for eval_key, eval_name in [('id', 'ID'), ('ood', 'OOD')]:
+                    for model_key, model_name in [('classifier', 'Classifier'), ('reference', 'Reference')]:
+                        reduced_stats = reduce_norm_stats(accelerator, eval_hidden_norm_stats[eval_key][model_key])
+                        if reduced_stats is None:
+                            continue
+                        eval_log_payload.update({
+                            f'{eval_name} Eval {model_name} Hidden Norm Mean': reduced_stats['mean'],
+                            f'{eval_name} Eval {model_name} Hidden Norm Variance': reduced_stats['variance'],
+                            f'{eval_name} Eval {model_name} Hidden Norm Std': reduced_stats['std'],
+                            f'{eval_name} Eval {model_name} Hidden Norm Min': reduced_stats['min'],
+                            f'{eval_name} Eval {model_name} Hidden Norm Max': reduced_stats['max'],
+                        })
+                        eval_hidden_stats_for_efficiency[f'{eval_key}_{model_key}'] = reduced_stats
+            run.log(eval_log_payload, step=global_step)
             if loss_type == "mle":
                 for k in ['id', 'ood']:
                     eval_stats[k] = {stat: torch.mean(eval_stats[k][stat]) for stat in eval_stats[k]}
@@ -657,6 +787,7 @@ for epoch in range(num_epochs):
                         'num_loss_tokens': float(loss_tokens_global),
                         'examples_per_sec': float(examples_global / max(eval_wall_sec, 1e-12)),
                         'tokens_per_sec': float(tokens_global / max(eval_wall_sec, 1e-12)),
+                        'hidden_norm_stats': eval_hidden_stats_for_efficiency,
                     })
 
         if ckpt_freq != -1 and global_step % ckpt_freq == 0:

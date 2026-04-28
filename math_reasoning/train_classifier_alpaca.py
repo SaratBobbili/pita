@@ -51,7 +51,7 @@ parser.add_argument('--max_batch_num_tokens', default=-1, type=int,
 parser.add_argument('--gradient_accumulation_step', default=1, type=int, help='gradient accumulation step')
 parser.add_argument('--shift_reward', default=0, type=float, help='shift reward by value (subtraction)')
 parser.add_argument('--scale_reward', default=1, type=float, help='scale reward by value (multiplication)')
-parser.add_argument('--cd_baseline', default=1, type=int, help='if 1, run the CD baseline.')
+parser.add_argument('--cd_baseline', default=0, type=int, help='if 1, run the CD baseline.')
 parser.add_argument('--use_chat_template', default=1, type=int, help='whether to use chat template for generation')
 parser.add_argument('--dtype', default='bfloat16', type=str, help='data type for the model bfloat16 or empty string')
 parser.add_argument('--temperature', default=0.8, type=float, help='temperature for sampling')
@@ -86,8 +86,6 @@ parser.add_argument('--num_atoms', default=11, type=int, help='number of atoms f
 parser.add_argument('--V_min', default=0, type=float, help='V_min for histogram learning')
 parser.add_argument('--V_max', default=1, type=float, help='V_max for histogram learning')
 parser.add_argument('--max_length', default=-1, type=int, help='max tokens for training')
-parser.add_argument('--max_optimizer_steps', default=10090, type=int,
-                    help='maximum optimizer update steps, -1 means no limit')
 parser.add_argument('--save_raw_efficiency', default=1, type=int,
                     help='whether to save raw efficiency logs')
 parser.add_argument('--efficiency_log_every', default=1, type=int,
@@ -144,9 +142,7 @@ save_raw_efficiency = bool(args.save_raw_efficiency)
 efficiency_log_every = args.efficiency_log_every
 sync_cuda_timing = bool(args.sync_cuda_timing)
 efficiency_log_dir = args.efficiency_log_dir
-max_optimizer_steps = args.max_optimizer_steps
 assert efficiency_log_every >= 1, 'efficiency_log_every must be >= 1'
-assert max_optimizer_steps == -1 or max_optimizer_steps >= 1, 'max_optimizer_steps must be -1 or >= 1'
 
 if classifier_ckpt_path is None:
     classifier_ckpt_path = classifier_model_id
@@ -419,7 +415,6 @@ classifier_model.train()
 classifier_model, optimizer, train_classifier_loader, id_eval_classifier_loader, ood_eval_classifier_loader, scheduler = \
     accelerator.prepare(classifier_model, optimizer, train_classifier_loader, id_eval_classifier_loader,
                         ood_eval_classifier_loader, scheduler)
-stop_training = False
 for epoch in range(num_epochs):
     run.log({'Epoch': epoch}, step=global_step)
     bar = tqdm(train_classifier_loader) if accelerator.is_local_main_process else train_classifier_loader
@@ -518,11 +513,6 @@ for epoch in range(num_epochs):
             accum_flops_trainable_local = 0.0
             accum_flops_total_local = 0.0
             optimizer_step_start_time = None
-            if max_optimizer_steps != -1 and optimizer_step_idx >= max_optimizer_steps:
-                stop_training = True
-
-        if stop_training:
-            break
 
         if eval_freq != -1 and (global_step % eval_freq == 0 or global_step == 1):
             utils.sync_cuda(sync_cuda_timing)
@@ -670,8 +660,6 @@ for epoch in range(num_epochs):
             utils.save_model(classifier_model, tokenizer, optimizer_to_save, scheduler_to_save, accelerator,
                              save_dir=save_dir, push_to_hub=False)
             classifier_model.train()
-    if stop_training:
-        break
 
 if accelerator.is_main_process:
     utils.sync_cuda(sync_cuda_timing)

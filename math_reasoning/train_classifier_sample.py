@@ -61,6 +61,8 @@ parser.add_argument('--top_p', default=0.9, type=float, help='top p for sampling
 parser.add_argument('--drop_no_variation', default=1, type=int,
                     help='whether to drop problems with no variation in the correctness label')
 parser.add_argument('--id_eval_ratio', default=0.1, type=float, help='ratio of id samples for evaluation')
+parser.add_argument('--num_rollouts_per_example', default=-1, type=int,
+                    help='number of rollouts to keep per problem when training; -1 uses all available rollouts')
 parser.add_argument('--eta', default=None, type=float,
                     help='eta for the classifier, larger it is, less KL regularization')
 parser.add_argument('--top_k', type=int, default=-1, help='top k logits to modify, -1 means all logits')
@@ -86,7 +88,7 @@ parser.add_argument('--num_atoms', default=11, type=int, help='number of atoms f
 parser.add_argument('--V_min', default=0, type=float, help='V_min for histogram learning')
 parser.add_argument('--V_max', default=1, type=float, help='V_max for histogram learning')
 parser.add_argument('--max_length', default=-1, type=int, help='max tokens for training')
-parser.add_argument('--max_optimizer_steps', default=10090, type=int,
+parser.add_argument('--max_optimizer_steps', default=-1, type=int,
                     help='maximum optimizer update steps, -1 means no limit')
 parser.add_argument('--save_raw_efficiency', default=1, type=int,
                     help='whether to save raw efficiency logs')
@@ -126,6 +128,7 @@ temperature = args.temperature
 top_p = args.top_p
 drop_no_variation = bool(args.drop_no_variation)
 id_eval_ratio = args.id_eval_ratio
+num_rollouts_per_example = args.num_rollouts_per_example
 eta = args.eta
 top_k = args.top_k
 match_fn_type = args.match_fn_type
@@ -147,6 +150,8 @@ efficiency_log_dir = args.efficiency_log_dir
 max_optimizer_steps = args.max_optimizer_steps
 assert efficiency_log_every >= 1, 'efficiency_log_every must be >= 1'
 assert max_optimizer_steps == -1 or max_optimizer_steps >= 1, 'max_optimizer_steps must be -1 or >= 1'
+assert num_rollouts_per_example == -1 or num_rollouts_per_example >= 1, \
+    'num_rollouts_per_example must be -1 or >= 1'
 
 if classifier_ckpt_path is None:
     classifier_ckpt_path = classifier_model_id
@@ -220,6 +225,16 @@ for data_path in data_paths:
         else:
             for k in merge_keys:
                 all_data[problem_position_d[current_problem]][k].extend(current_data[i][k])
+
+if num_rollouts_per_example != -1:
+    rollout_aligned_keys = merge_keys if reward_key in merge_keys else merge_keys + [reward_key]
+    for i in range(len(all_data)):
+        available_rollouts = len(all_data[i][reward_key])
+        keep_rollouts = min(num_rollouts_per_example, available_rollouts)
+        keep_indices = np.random.choice(available_rollouts, keep_rollouts, replace=False)
+        keep_indices = np.sort(keep_indices)
+        for k in rollout_aligned_keys:
+            all_data[i][k] = [all_data[i][k][j] for j in keep_indices]
 
 # shift and calculate reward
 # if inference mode is expectation, we calculate the exp with eta; else no need to do so

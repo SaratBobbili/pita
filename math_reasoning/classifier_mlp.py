@@ -11,21 +11,19 @@ from transformers.models.llama.modeling_llama import _prepare_4d_causal_attentio
 
 
 class CustomLlamaForSequenceClassification(LlamaPreTrainedModel):
-    def __init__(self, config, loss_type, use_bias, classifier_type, *, num_atoms: int = 11, V_min: float = 0.0, V_max: float = 1.0, num_mlp_layers: int = 0):
+    def __init__(self, config, loss_type, use_bias, classifier_type, *, num_atoms: int = 11, V_min: float = 0.0, V_max: float = 1.0, num_mlp_layers: int = 3):
         assert classifier_type in ["Q", "V"]
         print("Creating classifier of type ", classifier_type)
         super().__init__(config)
         self.num_labels = config.num_labels
         self.classifier_type = classifier_type
         self.model = LlamaModel(config)
-        self.num_mlp_layers = num_mlp_layers
-        if num_mlp_layers > 0:
-            d = config.hidden_size
-            mlp_layers = []
-            for _ in range(num_mlp_layers):
-                mlp_layers.append(nn.Linear(d, d, bias=use_bias))
-                mlp_layers.append(nn.GELU())
-            self.mlp = nn.Sequential(*mlp_layers)
+        d = config.hidden_size
+        mlp_layers = []
+        for _ in range(num_mlp_layers):
+            mlp_layers.append(nn.Linear(d, d, bias=use_bias))
+            mlp_layers.append(nn.GELU())
+        self.mlp = nn.Sequential(*mlp_layers)
         # num_labels should be vocab_size
         if loss_type == "mse":
             self.loss_fct = MSELoss(reduction="none")
@@ -57,6 +55,9 @@ class CustomLlamaForSequenceClassification(LlamaPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+    def head_forward(self, hidden_states):
+        return self.score(hidden_states + self.mlp(hidden_states))
+
     def get_input_embeddings(self):
         return self.model.embed_tokens
 
@@ -67,11 +68,6 @@ class CustomLlamaForSequenceClassification(LlamaPreTrainedModel):
         nn.init.zeros_(self.score.weight)
         if self.use_bias:
             nn.init.zeros_(self.score.bias)
-
-    def head_forward(self, hidden_states):
-        if self.num_mlp_layers > 0:
-            return self.score(hidden_states + self.mlp(hidden_states))
-        return self.score(hidden_states)
 
     def zero_init_mlp(self):
         for layer in self.mlp:

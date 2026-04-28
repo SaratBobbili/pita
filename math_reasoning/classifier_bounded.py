@@ -195,7 +195,7 @@ class CustomLlamaForSequenceClassification(LlamaPreTrainedModel):
                 indexed_logits = logits[:, :-1][torch.arange(bs)[:, None], torch.arange(seqlen-1), input_ids[:, 1:]]
                 indexed_logits = indexed_logits.float()
                 loss = self.calculate_loss(indexed_logits, labels, loss_weights, loss_mask[:, 1:])
-                return SequenceClassifierOutputWithPast(loss=loss, logits=indexed_logits)
+                return SequenceClassifierOutputWithPast(loss=loss, logits=indexed_logits, hidden_states=(hidden_states,))
             else:
                 # inference
                 # in first pass, input_ids: [bs, seqlen]
@@ -255,7 +255,7 @@ class CustomLlamaForSequenceClassification(LlamaPreTrainedModel):
                 hidden_states = transformer_outputs[0]  # [bs, seq_len, hidden_size]
                 logits = self.head_forward(hidden_states).float()  # [bs, seq_len, 1] or [bs, seq_len, num_atoms]
                 loss = self.calculate_loss(logits, labels, loss_weights, loss_mask)
-                return SequenceClassifierOutputWithPast(loss=loss, logits=logits)
+                return SequenceClassifierOutputWithPast(loss=loss, logits=logits, hidden_states=(hidden_states,))
             else:
                 # inference
                 top_k = logit_indices.size(1)

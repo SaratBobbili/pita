@@ -17,7 +17,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, set_seed, DataColl
 
 import utils
 from accuracy_utils import sample_match_strict, numeric_or_symbolic_correctness
-from classifier import CustomLlamaForSequenceClassification
+from classifier_mlp import CustomLlamaForSequenceClassification
 from utils import read_jsonl, create_classifier_data, CustomClassifierDataset, calculate_explained_variance, \
     calculate_r2, DynamicBatchSampler, calculate_mle_stats, custom_collate_fn
 from functools import partial
@@ -51,7 +51,7 @@ parser.add_argument('--max_batch_num_tokens', default=-1, type=int,
 parser.add_argument('--gradient_accumulation_step', default=1, type=int, help='gradient accumulation step')
 parser.add_argument('--shift_reward', default=0, type=float, help='shift reward by value (subtraction)')
 parser.add_argument('--scale_reward', default=1, type=float, help='scale reward by value (multiplication)')
-parser.add_argument('--cd_baseline', default=1, type=int, help='if 1, run the CD baseline.')
+parser.add_argument('--cd_baseline', default=0, type=int, help='if 1, run the CD baseline.')
 parser.add_argument('--use_chat_template', default=1, type=int, help='whether to use chat template for generation')
 parser.add_argument('--dtype', default='bfloat16', type=str, help='data type for the model bfloat16 or empty string')
 parser.add_argument('--temperature', default=0.8, type=float, help='temperature for sampling')
@@ -69,7 +69,7 @@ parser.add_argument('--match_fn_type', default='symbolic', type=str,
 parser.add_argument('--output_dir', default='checkpoints/temp/', type=str, help='checkpoints/exp1/round_0/')
 parser.add_argument('--num_workers', default=0, type=int,
                     help='number of workers for data loader; values other than 0 could cause issues with tokenizer')
-parser.add_argument('--num_epochs', default=3, type=int, help='number of epochs for training')
+parser.add_argument('--num_epochs', default=10, type=int, help='number of epochs for training')
 parser.add_argument('--eval_max_size', default=1000, type=int, help='number of epochs for training')
 parser.add_argument('--lr', default=2e-5, type=float, help='learning rate for the classifier')
 parser.add_argument('--warmup_step', default=-1, type=int, help='warmup steps for the classifier, -1 means no warmup')
@@ -85,8 +85,10 @@ parser.add_argument('--wandb_run_name', default="", type=str, help='wandb run na
 parser.add_argument('--num_atoms', default=11, type=int, help='number of atoms for mle classifier')
 parser.add_argument('--V_min', default=0, type=float, help='V_min for histogram learning')
 parser.add_argument('--V_max', default=1, type=float, help='V_max for histogram learning')
+parser.add_argument('--num_mlp_layers', default=5, type=int,
+                    help='number of Linear+GELU blocks in the classifier MLP residual branch')
 parser.add_argument('--max_length', default=-1, type=int, help='max tokens for training')
-parser.add_argument('--max_optimizer_steps', default=10090, type=int,
+parser.add_argument('--max_optimizer_steps', default=-1, type=int,
                     help='maximum optimizer update steps, -1 means no limit')
 parser.add_argument('--save_raw_efficiency', default=1, type=int,
                     help='whether to save raw efficiency logs')
@@ -147,6 +149,7 @@ efficiency_log_dir = args.efficiency_log_dir
 max_optimizer_steps = args.max_optimizer_steps
 assert efficiency_log_every >= 1, 'efficiency_log_every must be >= 1'
 assert max_optimizer_steps == -1 or max_optimizer_steps >= 1, 'max_optimizer_steps must be -1 or >= 1'
+assert args.num_mlp_layers >= 0, 'num_mlp_layers must be >= 0'
 
 if classifier_ckpt_path is None:
     classifier_ckpt_path = classifier_model_id
@@ -324,7 +327,8 @@ classifier_model = CustomLlamaForSequenceClassification.from_pretrained(classifi
                                                                         loss_type=loss_type, use_bias=use_bias,
                                                                         classifier_type=args.classifier_type,
                                                                         device_map=device, num_atoms=args.num_atoms,
-                                                                        V_min=args.V_min, V_max=args.V_max)
+                                                                        V_min=args.V_min, V_max=args.V_max,
+                                                                        num_mlp_layers=args.num_mlp_layers)
 print("Loaded classifier model")
 num_trainable_params = utils.count_parameters(classifier_model, trainable_only=True)
 num_total_params = utils.count_parameters(classifier_model, trainable_only=False)
@@ -332,13 +336,17 @@ num_total_params = utils.count_parameters(classifier_model, trainable_only=False
 if args.classifier_type == 'Q':
     if init_mode == 'zero':
         print('before loading score weight mean', classifier_model.score.weight.data.mean().item())
+        print('before loading mlp first layer weight mean', classifier_model.mlp[0].weight.data.mean().item())
         classifier_model.zero_init_classifier()
+        classifier_model.zero_init_mlp()
         print('after loading score weight mean', classifier_model.score.weight.data.mean().item())
+        print('after loading mlp first layer weight mean', classifier_model.mlp[0].weight.data.mean().item())
     elif init_mode == 'reuse':
         temp_model = AutoModelForCausalLM.from_pretrained(classifier_model_id, **model_loading_kwargs, device_map='cpu')
         lm_head_parameters = list(temp_model.lm_head.parameters())
         assert len(lm_head_parameters) == 1  # only weight
         print('before loading score weight mean', classifier_model.score.weight.data.mean().item())
+        print('before loading mlp first layer weight mean', classifier_model.mlp[0].weight.data.mean().item())
         print('original lm_head weight mean', lm_head_parameters[0].data.mean().item())
         lm_head_parameters = lm_head_parameters[0].data.to(device)
         vocab_size = lm_head_parameters.shape[0]
@@ -347,9 +355,11 @@ if args.classifier_type == 'Q':
                 vocab_size * args.num_atoms, -1)
         else:
             classifier_model.score.weight.data = lm_head_parameters
+        classifier_model.zero_init_mlp()
         del temp_model
         torch.cuda.empty_cache()
         print('after loading score weight mean', classifier_model.score.weight.data.mean().item())
+        print('after loading mlp first layer weight mean', classifier_model.mlp[0].weight.data.mean().item())
     else:
         assert init_mode == 'random' or init_mode == "warmstart"
 

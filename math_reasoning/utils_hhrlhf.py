@@ -2,31 +2,11 @@ import json
 import os
 import numpy as np
 import torch
+import torch.nn.functional as F
 from transformers.generation.logits_process import LogitsProcessorList
 from torch.utils.data import Dataset, Sampler
 from tqdm import tqdm
 from scipy.stats import entropy
-
-
-def ensure_dir(path):
-    os.makedirs(path, exist_ok=True)
-
-
-def append_jsonl(path, row):
-    ensure_dir(os.path.dirname(path))
-    with open(path, 'a') as f:
-        f.write(json.dumps(row) + '\n')
-
-
-def sync_cuda(sync_cuda_timing):
-    if sync_cuda_timing and torch.cuda.is_available():
-        torch.cuda.synchronize()
-
-
-def count_parameters(model, trainable_only=False):
-    if trainable_only:
-        return sum(p.numel() for p in model.parameters() if p.requires_grad)
-    return sum(p.numel() for p in model.parameters())
 
 
 def read_jsonl(path):
@@ -44,6 +24,19 @@ def write_jsonl(results, path):
         os.makedirs(os.path.dirname(path))
     with open(path, 'w') as f:
         f.write('\n'.join(json.dumps(e) for e in results))
+
+
+def write_json_array(results, path):
+    """
+    Writes a list of results to a file as a single JSON array.
+    Args:
+        results (list): List of serializable objects.
+        path (str): Output file path.
+    """
+    if not os.path.exists(os.path.dirname(path)):
+        os.makedirs(os.path.dirname(path))
+    with open(path, 'w') as f:
+        json.dump(results, f)
 
 
 def get_message(instruction):
@@ -85,6 +78,53 @@ def generate_with_classifier_guidance(ref_model, tokenizer, logit_processor, inp
         return outputs
 
 
+def perplexity_with_classifier_guidance(ref_model, tokenizer, logit_processor, inputs, response_inputs, eta):
+    """
+    Teacher-forced perplexity of continuation tokens under softmax(logit_processor(...)) each step.
+    inputs: padded prompt batch (same as generate). response_inputs: continuation only, 'input_ids' [B, Lr]
+    and optional 'attention_mask' (1 = include in average). Matches generate_with_classifier_guidance
+    when the same logit_processor and eta are used (eta==0 uses disabled processor as in eval).
+    """
+    _ = eta, tokenizer
+    assert inputs["input_ids"].shape[0] == response_inputs["input_ids"].shape[0]
+    device = inputs["input_ids"].device
+    response_ids = response_inputs["input_ids"]
+    response_mask = response_inputs.get("attention_mask")
+    if response_mask is None:
+        response_mask = torch.ones_like(response_ids)
+    batch_size = inputs["input_ids"].shape[0]
+    ppls = []
+    for b in tqdm(range(batch_size), desc="guided_ppl"):
+        logit_processor.reset_classifier_state()
+        prompt_row = inputs["input_ids"][b : b + 1]
+        prompt_attn = inputs["attention_mask"][b : b + 1]
+        rm = response_mask[b].bool()
+        resp_real = response_ids[b][rm]
+        rlen = int(resp_real.numel())
+        if rlen == 0:
+            ppls.append(torch.tensor(float("nan"), device=device))
+            continue
+        total_nll = torch.zeros((), device=device, dtype=torch.float32)
+        for t in range(rlen):
+            if t == 0:
+                prefix_ids = prompt_row
+                prefix_attn = prompt_attn
+            else:
+                gen_piece = resp_real[:t].unsqueeze(0)
+                prefix_ids = torch.cat([prompt_row, gen_piece], dim=1)
+                gen_attn = torch.ones(1, t, device=device, dtype=prompt_attn.dtype)
+                prefix_attn = torch.cat([prompt_attn, gen_attn], dim=1)
+            with torch.no_grad():
+                out = ref_model(input_ids=prefix_ids, attention_mask=prefix_attn)
+            ref_logits = out.logits[:, -1, :]
+            guided = logit_processor(prefix_ids, ref_logits)
+            tok = resp_real[t]
+            log_prob = F.log_softmax(guided.float(), dim=-1)[0, tok]
+            total_nll = total_nll - log_prob
+        ppls.append(torch.exp(total_nll / rlen))
+    return torch.stack(ppls)
+
+
 def get_output_indices(outputs, eos_token_id):
     # assume there is at most one eos_token per sequence, otherwise will raise error
     outputs_end_indices_tuple = (outputs == eos_token_id).nonzero(as_tuple=True)
@@ -102,20 +142,17 @@ def get_output_indices(outputs, eos_token_id):
     return outputs_end_indices
 
 
-def create_classifier_data(all_data, use_all_ref_tokens, drop_no_variation, max_length=None):
+def create_classifier_data(all_data, use_all_ref_tokens, max_length=None):
     print("Creating classifier data...")
-    classifier_data = {'input_ids': [], 'target_ids': [], 'rewards': [], 'loss_weights': [], 'num_token_full_response': []}
-    prompt_key = 'partial_guided_prompts_tokenized'
-    response_key = 'partial_guided_responses_tokenized'
+    classifier_data = {'input_ids': [], 'target_ids': [], 'rewards': [], 'loss_weights': []}#, 'num_token_full_response': []}
+    prompt_key = 'prompt_tokenized'
+    response_key = 'response_tokenized'
     num_token_prompt_key = 'num_response_tokens_in_partial_guided_prompts'
     reward_key = 'reward'
     assert use_all_ref_tokens in [0, 1]  # 2 needs to be handled with include rollin
     # input_ids will be roll-in, target_ids will be roll_out *sequence*
     for i in tqdm(range(len(all_data))):
         assert len(all_data[i][prompt_key]) == len(all_data[i][response_key]) == len(all_data[i][reward_key])
-        if drop_no_variation:
-            if len(set(all_data[i][reward_key])) == 1:
-                continue
         loss_weight = 1
         for j in range(len(all_data[i][prompt_key])):
             input_ids = all_data[i][prompt_key][j][:-1]
@@ -123,8 +160,9 @@ def create_classifier_data(all_data, use_all_ref_tokens, drop_no_variation, max_
                 target_ids = [all_data[i][prompt_key][j][-1]]
             else:
                 target_ids = [all_data[i][prompt_key][j][-1]] + all_data[i][response_key][j]
-            num_token_full_response = all_data[i][num_token_prompt_key][j] + len(target_ids) - 1
+            # num_token_full_response = all_data[i][num_token_prompt_key][j] + len(target_ids) - 1
             reward = all_data[i][reward_key][j]
+
             if len(target_ids) == 0:
                 continue
 
@@ -136,14 +174,14 @@ def create_classifier_data(all_data, use_all_ref_tokens, drop_no_variation, max_
                     continue
                 if len(input_ids) + len(target_ids) > max_length:
                     target_ids = target_ids[:max_length - len(input_ids)]
-                    num_token_full_response = all_data[i][num_token_prompt_key][j] + len(target_ids) - 1
+                    # num_token_full_response = all_data[i][num_token_prompt_key][j] + len(target_ids) - 1
 
             # print('input_ids', len(input_ids), 'target_ids', len(target_ids), 'sum', len(input_ids) + len(target_ids))
             classifier_data['input_ids'].append(input_ids)
             classifier_data['target_ids'].append(target_ids)
             classifier_data['rewards'].append(reward)
             classifier_data['loss_weights'].append(loss_weight)
-            classifier_data['num_token_full_response'].append(num_token_full_response)
+            # classifier_data['num_token_full_response'].append(num_token_full_response)
     return classifier_data
 
 

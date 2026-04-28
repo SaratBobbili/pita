@@ -11,7 +11,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, set_seed
 import copy
 from accuracy_utils import sample_match_strict, process_sample, numeric_or_symbolic_correctness, \
     equivalence_partition, compute_majority_vote_correct
-from classifier import CustomLlamaForSequenceClassification, CustomValueGuidedLogitProcessor
+from classifier_bounded import CustomLlamaForSequenceClassification, CustomValueGuidedLogitProcessor
 from utils import read_jsonl, tokenize_with_chat_template, generate_with_classifier_guidance, write_jsonl, \
     get_average_reward, get_parent_directory, resolve_dict_value
 import utils
@@ -62,6 +62,8 @@ parser.add_argument('--sync_cuda_timing', default=1, type=int,
                     help='synchronize CUDA before/after timing')
 parser.add_argument('--efficiency_log_dir', default=None, type=str,
                     help='directory for efficiency logs; defaults to output_dir/efficiency')
+parser.add_argument('--log_hidden_norm_stats', default=1, type=int,
+                    help='whether to log final-layer hidden-state norm stats for reference and classifier models')
 
 args = parser.parse_args()
 args_dict = vars(args)
@@ -105,6 +107,7 @@ shift_reward = resolve_dict_value(args_dict, training_args_dict, 'shift_reward')
 scale_reward = resolve_dict_value(args_dict, training_args_dict, 'scale_reward')
 save_raw_efficiency = bool(args.save_raw_efficiency)
 sync_cuda_timing = bool(args.sync_cuda_timing)
+log_hidden_norm_stats = bool(args.log_hidden_norm_stats)
 
 if output_dir is None:
     output_dir = classifier_ckpt_path
@@ -208,7 +211,47 @@ if save_raw_efficiency:
             'temperature': float(temperature),
             'max_new_tokens': int(max_new_tokens),
             'start_time_unix': time.time(),
+            'log_hidden_norm_stats': bool(log_hidden_norm_stats),
         }, f, indent=2)
+
+
+def init_norm_stats(device):
+    return {
+        'count': torch.tensor(0.0, device=device),
+        'sum': torch.tensor(0.0, device=device),
+        'sum_sq': torch.tensor(0.0, device=device),
+        'min': torch.tensor(float('inf'), device=device),
+        'max': torch.tensor(float('-inf'), device=device),
+    }
+
+
+def update_norm_stats(stats, hidden_states, attention_mask):
+    # hidden_states: [bs, seqlen, hidden_dim], attention_mask: [bs, seqlen]
+    norms = torch.linalg.vector_norm(hidden_states.float(), dim=-1)
+    norms = norms[attention_mask.bool()]
+    if norms.numel() == 0:
+        return
+    stats['count'] += float(norms.numel())
+    stats['sum'] += norms.sum()
+    stats['sum_sq'] += (norms * norms).sum()
+    stats['min'] = torch.minimum(stats['min'], norms.min())
+    stats['max'] = torch.maximum(stats['max'], norms.max())
+
+
+def finalize_norm_stats(stats):
+    if stats['count'].item() == 0:
+        return {}
+    mean = stats['sum'] / stats['count']
+    variance = torch.clamp(stats['sum_sq'] / stats['count'] - mean * mean, min=0.0)
+    std = torch.sqrt(variance)
+    return {
+        'count': float(stats['count'].item()),
+        'mean': float(mean.item()),
+        'variance': float(variance.item()),
+        'std': float(std.item()),
+        'min': float(stats['min'].item()),
+        'max': float(stats['max'].item()),
+    }
 
 ref_model.eval()
 classifier_model.eval()
@@ -231,6 +274,7 @@ for j in range(len(inference_eval_examples)):
     if max_prompt_length != -1 and num_toks > max_prompt_length:
         skip_problems.append(j)
 
+global_hidden_norm_stats = {'reference': init_norm_stats(device), 'classifier': init_norm_stats(device)}
 
 for i in range(num_samples):
     repeat_index = i
@@ -251,6 +295,7 @@ for i in range(num_samples):
     print('total number of problems to infer for repeat {0}:'.format(repeat_index), len(data_to_infer))
     num_batches = math.ceil(len(data_to_infer) / batch_size)
     for j in tqdm(range(num_batches)):
+        batch_hidden_norm_stats_running = {'reference': init_norm_stats(device), 'classifier': init_norm_stats(device)}
         utils.sync_cuda(sync_cuda_timing)
         batch_total_start = time.time()
         batch_start_index = j * batch_size
@@ -290,11 +335,30 @@ for i in range(num_samples):
             concat_input_ids = torch.cat([current_inputs['input_ids'][k:k + kl_batch_size], current_outputs_id[k:k + kl_batch_size]], dim=1)
             concat_attention_mask = torch.cat([current_inputs['attention_mask'][k:k + kl_batch_size], output_attention_mask], dim=1)
             concat_inputs = {'input_ids': concat_input_ids, 'attention_mask': concat_attention_mask}
-            ref_model_output = ref_model(**concat_inputs)
+            ref_model_output = ref_model(
+                **concat_inputs,
+                output_hidden_states=log_hidden_norm_stats,
+                return_dict=True,
+            )
             ref_model_output_logits = ref_model_output.logits[:, current_inputs['input_ids'].shape[1] - 1:-1]
             ref_model_output_logits = ref_model_output_logits.float() / temperature
+            if log_hidden_norm_stats:
+                ref_hidden_states = ref_model_output.hidden_states[-1]
+                update_norm_stats(batch_hidden_norm_stats_running['reference'], ref_hidden_states, concat_attention_mask)
+                update_norm_stats(global_hidden_norm_stats['reference'], ref_hidden_states, concat_attention_mask)
             del ref_model_output
             torch.cuda.empty_cache()
+
+            if log_hidden_norm_stats:
+                classifier_hidden_states = classifier_model.model(
+                    input_ids=concat_input_ids,
+                    attention_mask=concat_attention_mask,
+                    return_dict=True
+                ).last_hidden_state
+                update_norm_stats(batch_hidden_norm_stats_running['classifier'], classifier_hidden_states, concat_attention_mask)
+                update_norm_stats(global_hidden_norm_stats['classifier'], classifier_hidden_states, concat_attention_mask)
+                del classifier_hidden_states
+                torch.cuda.empty_cache()
 
             cur_token_kl = utils.kl_divergence(aligned_model_scores[k:k+kl_batch_size].to(ref_model_output_logits.device), ref_model_output_logits)
             cur_token_kl = cur_token_kl * output_attention_mask
@@ -356,6 +420,12 @@ for i in range(num_samples):
                     'guidance_overhead_ratio_flops': float(guided_flops_est / max(ref_only_flops_est, 1e-12)),
                 })
         if save_raw_efficiency:
+            batch_hidden_norm_stats = {}
+            if log_hidden_norm_stats:
+                batch_hidden_norm_stats = {
+                    'reference': finalize_norm_stats(batch_hidden_norm_stats_running['reference']),
+                    'classifier': finalize_norm_stats(batch_hidden_norm_stats_running['classifier']),
+                }
             utils.append_jsonl(infer_batch_metrics_path, {
                 'repeat_index': int(repeat_index),
                 'batch_index': int(j),
@@ -368,6 +438,7 @@ for i in range(num_samples):
                 'total_wall_sec': float(batch_total_wall_sec),
                 'guidance_calls_batch': guidance_calls,
                 'guidance_calls_per_example': float(guidance_call_to_example_ratio),
+                'hidden_norm_stats': batch_hidden_norm_stats,
             })
 
 print('done inference, now combine results')
@@ -447,6 +518,12 @@ if save_raw_efficiency:
             total_prompt_tokens += row['prompt_tokens']
             total_ref_only_flops += row['ref_only_flops_est']
             total_guided_flops += row['guided_flops_est']
+    final_hidden_norm_stats = {}
+    if log_hidden_norm_stats:
+        final_hidden_norm_stats = {
+            'reference': finalize_norm_stats(global_hidden_norm_stats['reference']),
+            'classifier': finalize_norm_stats(global_hidden_norm_stats['classifier']),
+        }
     with open(infer_summary_path, 'w') as f:
         json.dump({
             'total_examples': int(total_examples),
@@ -461,4 +538,5 @@ if save_raw_efficiency:
             'guidance_overhead_ratio_flops': float(total_guided_flops / max(total_ref_only_flops, 1e-12)),
             'num_ref_params': int(num_ref_params),
             'num_value_params': int(num_value_params),
+            'hidden_norm_stats': final_hidden_norm_stats,
         }, f, indent=2)
