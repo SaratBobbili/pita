@@ -1,5 +1,9 @@
 # PITA Refactor — Status & Continuation Guide
 
+**STATUS: COMPLETE.** Tasks 0–10 done. GPU end-to-end parity test passed
+(`generate → train → eval`). All source files staged via `git add refactor/`
+(not yet committed). Test artifacts under `refactor/outputs/` are gitignored.
+
 ## What Has Been Done (Tasks 0–9 Complete)
 
 All new code lives inside `/scratch/user/saratb_tamu.edu/research/pita/refactor/`.
@@ -119,24 +123,33 @@ Test artifacts live under `refactor/outputs/` (gitignored).
 ## System Prompt for New Chat Session
 
 ```
-You are continuing implementation of the PITA standalone package refactor.
+You are working on the PITA standalone package refactor.
 
 CONTEXT:
 - All code lives in /scratch/user/saratb_tamu.edu/research/pita/refactor/
-- The assignment spec is at /scratch/user/saratb_tamu.edu/research/pita/assignment.md
 - The status file is at /scratch/user/saratb_tamu.edu/research/pita/refactor/todo.md
 - Legacy code (untouched) is in /scratch/user/saratb_tamu.edu/research/pita/math_reasoning/
-- Conda env: qsharp (Python 3.12). Deps (hydra-core, omegaconf, ray) installed; `pip install -e .` done.
-- Tasks 0-9 are COMPLETE. All source files are written.
-- Task 10 validation: import smoke tests + CLI Hydra wiring are VERIFIED/PASSED.
-- Remaining: GPU small-shard end-to-end parity test, then git add.
+- Conda env: qsharp (Python 3.12). Deps installed; `pip install -e .` done (run from refactor/).
+- The refactor is COMPLETE: Tasks 0-10 done, GPU end-to-end parity test passed
+  (generate -> train -> eval on a tiny HH-RLHF subset). Source files are staged
+  (git add refactor/) but NOT yet committed. outputs/ is gitignored.
 
-YOUR JOB:
-1. Read refactor/todo.md for full status.
-2. Ensure you are on a GPU node (NOT a login node). Activate conda env qsharp.
-3. Run the small-shard parity test (cli.generate, then a tiny train + eval).
-4. Fix any runtime errors that arise.
-5. Stage changes with git add refactor/ when the parity test passes.
+RUNNING (need a GPU node, NOT a login node `slogin-*`; activate qsharp):
+- An interactive GPU allocation may already exist (check `squeue`); run commands on
+  it via `srun --jobid=<ID> --overlap bash -lc '...'`.
+- Relative dataset paths in configs resolve against the repo root
+  (math_reasoning/...), so either run from the repo root or override
+  dataset.data_path / data.train_eval_save_path to absolute paths.
+- CLIs: `python -m cli.generate dataset=<gsm8k|math|hh_rlhf|alpaca_pref> ...`,
+  `python -m cli.train ...`, `python -m cli.eval ...` (run from refactor/).
+- See the "Task 10" section above for the exact verified parity commands.
+
+LIKELY NEXT STEPS (only if asked):
+- Commit the staged changes.
+- Run full-scale generate/train/eval on real (non-subset) data.
+- Wire up the arithmetic (GSM8K/MATH) path end-to-end on GPU (only the preference
+  path was parity-tested; arithmetic eval got the same nested-config fix but was
+  not run).
 
 RULES:
 - All new code goes inside refactor/ only. Legacy code stays untouched.
