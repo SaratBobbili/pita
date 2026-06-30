@@ -1,8 +1,8 @@
 # PITA Refactor — Status & Continuation Guide
 
-**STATUS: COMPLETE.** Tasks 0–10 done. GPU end-to-end parity test passed
-(`generate → train → eval`). All source files staged via `git add refactor/`
-(not yet committed). Test artifacts under `refactor/outputs/` are gitignored.
+**STATUS: Tasks 0–10 done** (GPU end-to-end parity test passed: `generate → train → eval`).
+**Task 11 (Qwen/Llama classifier generalization) — DONE in code, GPU re-verify pending.**
+Test artifacts under `refactor/outputs/` are gitignored.
 
 ## What Has Been Done (Tasks 0–9 Complete)
 
@@ -120,6 +120,38 @@ Test artifacts live under `refactor/outputs/` (gitignored).
 
 ---
 
+## Task 11 — Qwen/Llama classifier generalization
+
+The value classifier now supports both Llama and Qwen backbones, selected by a
+new Hydra field `models.classifier_arch` (`llama` | `qwen`). Previously the only
+class was `CustomLlamaForSequenceClassification` (a `LlamaModel`), so the default
+Qwen configs silently dropped Qwen's attention q/k/v biases.
+
+- [x] **Stage 1 — `models/classifier.py`**: shared `_ValueClassifierMixin`
+  (head/score/atoms init, embeddings, `zero_init_classifier`, `calculate_loss`,
+  `calculate_predictions`, `forward`) with backbone built via
+  `AutoModel.from_config(config)`. Two thin subclasses,
+  `CustomLlamaForSequenceClassification` and `CustomQwen2ForSequenceClassification`,
+  differ only in base class and the per-class `_prepare_mask` staticmethod (the
+  llama vs qwen2 `_prepare_4d_causal_attention_mask_with_cache_position`, used only
+  in the `V`-type branch). Factory `get_classifier_class(arch)` maps
+  `llama`→Llama, `qwen`/`qwen2`→Qwen.
+- [x] **Stage 2 — configs**: `models.classifier_arch: qwen` in `generate.yaml` and
+  `train.yaml`; `classifier_arch: null` in `eval.yaml` (resolved from saved
+  `args.json`).
+- [x] **Stage 3 — wiring**: `generation/collector.py`, `training/trainer.py`,
+  `eval/preference.py`, `eval/arithmetic.py` now call
+  `get_classifier_class(arch).from_pretrained(...)`. The two eval files resolve
+  `classifier_arch` from `args.json` via `resolve_dict_value` like the other model
+  params.
+- [x] Import smoke test passed (`get_classifier_class('qwen'|'llama')`).
+- [ ] **GPU re-verify** (env `qsharp`): re-run the Task 10 tiny HH-RLHF
+  train/eval with `models.classifier_arch=qwen` and confirm the Qwen classifier
+  loads with no unexpected-key warnings about dropped `*.bias` weights. Also try
+  `classifier_arch=llama` with a Llama checkpoint.
+
+---
+
 ## System Prompt for New Chat Session
 
 ```
@@ -130,9 +162,18 @@ CONTEXT:
 - The status file is at /scratch/user/saratb_tamu.edu/research/pita/refactor/todo.md
 - Legacy code (untouched) is in /scratch/user/saratb_tamu.edu/research/pita/math_reasoning/
 - Conda env: qsharp (Python 3.12). Deps installed; `pip install -e .` done (run from refactor/).
-- The refactor is COMPLETE: Tasks 0-10 done, GPU end-to-end parity test passed
-  (generate -> train -> eval on a tiny HH-RLHF subset). Source files are staged
-  (git add refactor/) but NOT yet committed. outputs/ is gitignored.
+- Tasks 0-10 done (GPU end-to-end parity passed on a tiny HH-RLHF subset).
+- Task 11 (Qwen/Llama classifier generalization) is DONE in code, import-smoke-tested,
+  but NOT yet GPU re-verified. Changes are not committed. outputs/ is gitignored.
+
+TASK 11 RECAP (see the "Task 11" section above for details):
+- models/classifier.py: shared _ValueClassifierMixin + thin
+  CustomLlamaForSequenceClassification / CustomQwen2ForSequenceClassification
+  subclasses + get_classifier_class(arch) factory. Backbone via AutoModel.from_config.
+- New Hydra field models.classifier_arch (qwen|llama): set in generate.yaml/train.yaml
+  (qwen), null in eval.yaml (resolved from saved args.json).
+- All 4 classifier load sites (collector/trainer/eval.preference/eval.arithmetic)
+  use get_classifier_class(arch).from_pretrained(...).
 
 RUNNING (need a GPU node, NOT a login node `slogin-*`; activate qsharp):
 - An interactive GPU allocation may already exist (check `squeue`); run commands on
@@ -145,11 +186,13 @@ RUNNING (need a GPU node, NOT a login node `slogin-*`; activate qsharp):
 - See the "Task 10" section above for the exact verified parity commands.
 
 LIKELY NEXT STEPS (only if asked):
+- GPU re-verify Task 11: re-run the Task 10 tiny HH-RLHF train/eval with
+  models.classifier_arch=qwen; confirm no unexpected-key (*.bias) warnings when the
+  Qwen classifier loads. Then sanity-check classifier_arch=llama with a Llama ckpt.
 - Commit the staged changes.
 - Run full-scale generate/train/eval on real (non-subset) data.
 - Wire up the arithmetic (GSM8K/MATH) path end-to-end on GPU (only the preference
-  path was parity-tested; arithmetic eval got the same nested-config fix but was
-  not run).
+  path was parity-tested).
 
 RULES:
 - All new code goes inside refactor/ only. Legacy code stays untouched.

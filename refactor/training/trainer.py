@@ -11,7 +11,7 @@ from tqdm import tqdm
 from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM, set_seed, get_constant_schedule_with_warmup
 from functools import partial
 
-from models.classifier import CustomLlamaForSequenceClassification
+from models.classifier import get_classifier_class
 from training.dataset import (
     CustomClassifierDataset, DynamicBatchSampler, custom_collate_fn,
     calculate_explained_variance, calculate_r2, calculate_mle_stats, save_model
@@ -54,7 +54,7 @@ def run_training(cfg):
         model_loading_kwargs['torch_dtype'] = torch.bfloat16
 
     classifier_ckpt_path = cfg.models.classifier_ckpt_path or cfg.models.classifier_model_id
-    classifier_model = CustomLlamaForSequenceClassification.from_pretrained(
+    classifier_model = get_classifier_class(cfg.models.classifier_arch).from_pretrained(
         classifier_ckpt_path, **model_loading_kwargs,
         num_labels=vocab_size, loss_type=cfg.models.loss_type,
         use_bias=bool(cfg.models.use_bias), classifier_type=cfg.models.classifier_type,

@@ -17,6 +17,7 @@ data:
 models:
   ref_model_id: Qwen/Qwen2.5-7B-Instruct
   classifier_model_id: Qwen/Qwen2.5-1.5B-Instruct
+  classifier_arch: qwen
   classifier_type: Q
   classifier_ckpt_path: null
   init_mode: reuse

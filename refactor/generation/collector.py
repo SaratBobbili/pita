@@ -1,7 +1,7 @@
 import torch
 import math
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification, set_seed, DataCollatorForLanguageModeling
-from models.classifier import CustomLlamaForSequenceClassification
+from models.classifier import get_classifier_class
 from models.guidance import CustomValueGuidedLogitProcessor, generate_with_classifier_guidance
 from training.dataset import tokenize_with_chat_template, get_output_indices
 from scoring.arithmetic import quick_evaluate_single, evaluate_preference, numeric_or_symbolic_correctness, sample_match_strict
@@ -20,7 +20,7 @@ def load_models(cfg, device):
 
     vocab_size = len(tokenizer)
     classifier_ckpt = cfg.models.classifier_ckpt or cfg.models.classifier_model_id
-    classifier_model = CustomLlamaForSequenceClassification.from_pretrained(
+    classifier_model = get_classifier_class(cfg.models.classifier_arch).from_pretrained(
         classifier_ckpt, **model_loading_kwargs,
         num_labels=vocab_size, loss_type='bce', use_bias=False,
         classifier_type=cfg.models.classifier_type, device_map=device)

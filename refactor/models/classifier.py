@@ -1,4 +1,4 @@
-from transformers import LlamaPreTrainedModel
+from transformers import AutoModel, LlamaPreTrainedModel, Qwen2PreTrainedModel
 from transformers.modeling_outputs import SequenceClassifierOutputWithPast
 from transformers.cache_utils import Cache
 from typing import List, Optional, Tuple, Union
@@ -6,44 +6,37 @@ import torch
 from torch.nn import BCEWithLogitsLoss, MSELoss
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import LlamaModel
-from transformers.models.llama.modeling_llama import _prepare_4d_causal_attention_mask_with_cache_position
+from transformers.models.llama.modeling_llama import _prepare_4d_causal_attention_mask_with_cache_position as _llama_prepare_mask
+from transformers.models.qwen2.modeling_qwen2 import _prepare_4d_causal_attention_mask_with_cache_position as _qwen2_prepare_mask
 
 
-class CustomLlamaForSequenceClassification(LlamaPreTrainedModel):
-    def __init__(self, config, loss_type, use_bias, classifier_type, *, num_atoms: int = 11, V_min: float = 0.0, V_max: float = 1.0):
+class _ValueClassifierMixin:
+    _prepare_mask = None
+
+    def _init_head(self, config, loss_type, use_bias, classifier_type, num_atoms, V_min, V_max):
         assert classifier_type in ["Q", "V"]
-        super().__init__(config)
         self.num_labels = config.num_labels
         self.classifier_type = classifier_type
-        self.model = LlamaModel(config)
+        self.model = AutoModel.from_config(config)
         if loss_type == "mse":
             self.loss_fct = MSELoss(reduction="none")
-            if self.classifier_type == "Q":
-                self.score = nn.Linear(config.hidden_size, self.num_labels, bias=use_bias)
-            elif self.classifier_type == "V":
-                self.score = nn.Linear(config.hidden_size, 1, bias=use_bias)
+            out_dim = self.num_labels if classifier_type == "Q" else 1
+            self.score = nn.Linear(config.hidden_size, out_dim, bias=use_bias)
         elif loss_type == "bce":
             self.loss_fct = BCEWithLogitsLoss(reduction="none")
-            if self.classifier_type == "Q":
-                self.score = nn.Linear(config.hidden_size, self.num_labels, bias=use_bias)
-            elif self.classifier_type == "V":
-                self.score = nn.Linear(config.hidden_size, 1, bias=use_bias)
+            out_dim = self.num_labels if classifier_type == "Q" else 1
+            self.score = nn.Linear(config.hidden_size, out_dim, bias=use_bias)
         elif loss_type == "mle":
             self.num_atoms = num_atoms
             self.V_min = V_min
             self.V_max = V_max
             self.atoms = torch.linspace(self.V_min, self.V_max, self.num_atoms).float()
-            if self.classifier_type == "Q":
-                self.score = nn.Linear(config.hidden_size, self.num_labels * self.num_atoms, bias=use_bias)
-            elif self.classifier_type == "V":
-                self.score = nn.Linear(config.hidden_size, self.num_atoms, bias=use_bias)
+            out_dim = self.num_labels * self.num_atoms if classifier_type == "Q" else self.num_atoms
+            self.score = nn.Linear(config.hidden_size, out_dim, bias=use_bias)
         else:
             raise ValueError(f"Invalid loss type: {loss_type}.")
-
         self.loss_type = loss_type
         self.use_bias = use_bias
-        self.post_init()
 
     def get_input_embeddings(self):
         return self.model.embed_tokens
@@ -192,7 +185,7 @@ class CustomLlamaForSequenceClassification(LlamaPreTrainedModel):
                 expanded_attention_mask = torch.cat([attention_mask, torch.ones((bs, top_k), dtype=torch.long, device=attention_mask.device)], dim=1)
                 cache_position = torch.arange(attention_mask.shape[1], expanded_attention_mask.shape[1], device=device)
                 actual_position_ids = (torch.ones((1, top_k)) * attention_mask.shape[1]).to(dtype=attention_mask.dtype, device=device)
-                actual_attention_mask = _prepare_4d_causal_attention_mask_with_cache_position(
+                actual_attention_mask = self._prepare_mask(
                     expanded_attention_mask, top_k, expanded_attention_mask.shape[1],
                     dtype=dtype, device=device, min_dtype=min_dtype,
                     cache_position=cache_position, batch_size=input_ids.shape[0])
@@ -215,3 +208,32 @@ class CustomLlamaForSequenceClassification(LlamaPreTrainedModel):
                     logits=logits,
                     past_key_values=output_past_key_values,
                 )
+
+
+class CustomLlamaForSequenceClassification(LlamaPreTrainedModel, _ValueClassifierMixin):
+    _prepare_mask = staticmethod(_llama_prepare_mask)
+
+    def __init__(self, config, loss_type, use_bias, classifier_type, *, num_atoms: int = 11, V_min: float = 0.0, V_max: float = 1.0):
+        super().__init__(config)
+        self._init_head(config, loss_type, use_bias, classifier_type, num_atoms, V_min, V_max)
+        self.post_init()
+
+
+class CustomQwen2ForSequenceClassification(Qwen2PreTrainedModel, _ValueClassifierMixin):
+    _prepare_mask = staticmethod(_qwen2_prepare_mask)
+
+    def __init__(self, config, loss_type, use_bias, classifier_type, *, num_atoms: int = 11, V_min: float = 0.0, V_max: float = 1.0):
+        super().__init__(config)
+        self._init_head(config, loss_type, use_bias, classifier_type, num_atoms, V_min, V_max)
+        self.post_init()
+
+
+_ARCH_TO_CLS = {
+    "llama": CustomLlamaForSequenceClassification,
+    "qwen": CustomQwen2ForSequenceClassification,
+    "qwen2": CustomQwen2ForSequenceClassification,
+}
+
+
+def get_classifier_class(arch):
+    return _ARCH_TO_CLS[arch]

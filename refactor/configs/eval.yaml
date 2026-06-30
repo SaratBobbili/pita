@@ -14,6 +14,7 @@ eval:
 models:
   ref_model_id: null
   classifier_model_id: null
+  classifier_arch: null
   classifier_type: null
   inference_mode: null
   loss_type: null

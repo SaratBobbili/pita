@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM, set_seed
 
-from models.classifier import CustomLlamaForSequenceClassification
+from models.classifier import get_classifier_class
 from models.guidance import CustomValueGuidedLogitProcessor, generate_with_classifier_guidance
 from training.dataset import (
     read_jsonl, write_jsonl, write_json_array, tokenize_with_chat_template,
@@ -27,6 +27,7 @@ def run_eval(cfg):
     ref_model_id = resolve_dict_value(models_dict, ta_models, 'ref_model_id')
     classifier_type = resolve_dict_value(models_dict, ta_models, 'classifier_type')
     classifier_model_id = resolve_dict_value(models_dict, ta_models, 'classifier_model_id')
+    classifier_arch = resolve_dict_value(models_dict, ta_models, 'classifier_arch')
     inference_mode = resolve_dict_value(models_dict, ta_models, 'inference_mode')
     loss_type = resolve_dict_value(models_dict, ta_models, 'loss_type')
     use_bias = bool(ta_models.get('use_bias', 0))
@@ -62,7 +63,7 @@ def run_eval(cfg):
         model_loading_kwargs['torch_dtype'] = torch.bfloat16
 
     ref_model = AutoModelForCausalLM.from_pretrained(ref_model_id, **model_loading_kwargs, device_map=device)
-    classifier_model = CustomLlamaForSequenceClassification.from_pretrained(
+    classifier_model = get_classifier_class(classifier_arch).from_pretrained(
         classifier_ckpt_path, **model_loading_kwargs, num_labels=vocab_size,
         classifier_type=classifier_type, loss_type=loss_type, use_bias=use_bias,
         device_map=device, num_atoms=num_atoms, V_min=V_min, V_max=V_max)

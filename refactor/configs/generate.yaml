@@ -18,6 +18,7 @@ models:
   ref_model_id: Qwen/Qwen2.5-7B-Instruct
   classifier_ckpt: null
   classifier_model_id: Qwen/Qwen2.5-1.5B-Instruct
+  classifier_arch: qwen
   classifier_type: Q
   inference_mode: expectation
   eta: 1.0
