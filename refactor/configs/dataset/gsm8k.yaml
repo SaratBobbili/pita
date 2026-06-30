@@ -1,0 +1,8 @@
+name: gsm8k
+family: arithmetic
+answer_key: answer
+match_fn: symbolic
+data_path: math_reasoning/dataset/gsm8k_train.jsonl
+train_eval_save_path: math_reasoning/dataset/gsm8k_train_eval.json
+eval_type: arithmetic
+generation_strategy: guided

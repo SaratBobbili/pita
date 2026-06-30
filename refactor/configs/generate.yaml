@@ -1,0 +1,26 @@
+defaults:
+  - dataset: gsm8k
+
+trainer:
+  n_gpus_per_node: 8
+  output_dir: outputs/${dataset.name}/gen
+
+generation:
+  num_repeats: 16
+  num_context: 1
+  batch_size: 8
+  temperature: 0.8
+  top_p: 0.9
+  max_new_tokens: 1024
+  seed: 47
+
+models:
+  ref_model_id: Qwen/Qwen2.5-7B-Instruct
+  classifier_ckpt: null
+  classifier_model_id: Qwen/Qwen2.5-1.5B-Instruct
+  classifier_type: Q
+  inference_mode: expectation
+  eta: 1.0
+  top_k: 20
+  cd_baseline: 0
+  dtype: bfloat16

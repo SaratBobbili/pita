@@ -1,0 +1,6 @@
+name: alpaca_pref
+family: preference
+data_path: math_reasoning/dataset/alpaca_noisy_multi_preference_train_eval.json
+train_eval_save_path: math_reasoning/dataset/alpaca_noisy_multi_preference_train_eval.json
+eval_type: preference_gen
+generation_strategy: offline_pairs

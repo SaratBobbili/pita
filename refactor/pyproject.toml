@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pita"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.4",
+    "transformers>=4.45",
+    "accelerate>=1.6",
+    "datasets>=3.0",
+    "hydra-core>=1.3",
+    "omegaconf>=2.3",
+    "ray[default]>=2.9",
+    "pyarrow>=19.0",
+    "pandas>=2.2",
+    "wandb>=0.19",
+    "tqdm",
+    "numpy>=2.2",
+    "scikit-learn>=1.6",
+    "math-verify>=0.7",
+]
+
+[tool.setuptools.packages.find]
+include = ["datasets*", "generation*", "models*", "training*", "eval*", "scoring*", "cli*", "configs*"]
+exclude = ["math_reasoning*", "imdb_gen*", "star_graph*"]

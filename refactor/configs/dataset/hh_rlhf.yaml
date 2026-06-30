@@ -1,0 +1,6 @@
+name: hh_rlhf
+family: preference
+data_path: math_reasoning/anthropic_hh_train_eval.json
+train_eval_save_path: math_reasoning/anthropic_hh_train_eval.json
+eval_type: preference_ppl
+generation_strategy: offline_pairs

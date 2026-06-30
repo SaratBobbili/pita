@@ -1,0 +1,8 @@
+name: math
+family: arithmetic
+answer_key: solution
+match_fn: symbolic
+data_path: math_reasoning/dataset/math_train.jsonl
+train_eval_save_path: math_reasoning/dataset/math_train_eval.json
+eval_type: arithmetic
+generation_strategy: guided

@@ -1,0 +1,22 @@
+defaults:
+  - dataset: gsm8k
+
+trainer:
+  output_dir: null
+
+eval:
+  classifier_ckpt: null
+  batch_size: 8
+  num_samples: 8
+  max_new_tokens: 1024
+  seed: 47
+
+models:
+  ref_model_id: null
+  classifier_model_id: null
+  classifier_type: null
+  inference_mode: null
+  loss_type: null
+  eta: null
+  top_k: 20
+  dtype: null

@@ -1,0 +1,6 @@
+outputs/
+*.egg-info/
+__pycache__/
+*.pyc
+.hydra/
+wandb/
