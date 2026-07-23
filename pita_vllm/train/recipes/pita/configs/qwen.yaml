@@ -1,0 +1,7 @@
+# Dataset-agnostic PITA family pair: qwen
+family: qwen
+
+models:
+  ref_model_id: Qwen/Qwen2.5-7B-Instruct
+  classifier_model_id: Qwen/Qwen2.5-1.5B-Instruct
+  classifier_arch: qwen

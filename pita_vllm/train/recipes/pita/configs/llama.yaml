@@ -1,0 +1,7 @@
+# Dataset-agnostic PITA family pair: llama
+family: llama
+
+models:
+  ref_model_id: meta-llama/Meta-Llama-3-8B-Instruct
+  classifier_model_id: meta-llama/Llama-3.2-1B-Instruct
+  classifier_arch: llama

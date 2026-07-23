@@ -1,20 +1,24 @@
 ---
 name: PITA Refactor
 overview: >-
-  Build the PITA pipeline ground-up under refactor/ (N-round generate+train,
-  then one final eval). Borrow reference pipelines by copying files into
-  refactor/ and editing — never depend on or run math_reasoning/SPPO/
-  verl-tool-lens as the product. Preference (SPPO-sourced) primary; arithmetic
-  on DAPO-MATH-17K with GSM8K/MATH500/MATH/AIME24 eval (AIME25 later).
-  DeepSpeed is a candidate engine, not the Goal.
+  Product under pita_vllm/ with top-level train/ and evaluation/. Train is
+  self-contained (dataset, recipes per algorithm, utils, configs, launch, env).
+  Borrow from SPPO / refactor_old / math_reasoning by cp+edit; no runtime
+  coupling. Preference-first baselines; vLLM guided decode; arithmetic later.
 todos:
-  - id: S1-eval-datasets
+  - id: S0-train-setup
     content: >-
-      Lock datasets + math-harness boundary: DAPO-MATH-17K train; eval GSM8K/
-      MATH500/MATH/AIME24 via math-evaluation-harness (AIME25 deferred);
-      preference eval TBD; Hydra round-data vs eval-suite sketch
+      Create pita_vllm/train layout (dataset, recipes/{sppo,ipo,kto,pita},
+      utils, configs); env setup from SPPO + PITA extras; PITA family model
+      configs under recipes/pita; evaluation/ stub only
+    status: completed
+  - id: S1-pipeline-design
+    content: >-
+      Preference datasets/baselines lock details; vLLM logitsproc port sketch;
+      cp target lists; wire generate/train loop design (was prior S1 work)
     status: pending
 ---
+
 
 # PITA Refactor
 
@@ -24,18 +28,19 @@ todos:
 2. Work **only** the active pending subtask (first pending todo, or the id the user names).
 3. Do not reopen locked decisions unless the user explicitly asks.
 4. Before editing: open files named in that subtask’s deep brief; understand the call graph.
-5. **Ground-up product:** the runnable pipeline lives only under `refactor/`. Do **not** import from, call into, or ship against `math_reasoning/`, SPPO, or `verl-tool-lens` as runtime dependencies.
-6. **Reuse by copy:** when borrowing reference code, **`cp` the file(s) into `refactor/`**, then edit in place. Do not regenerate large known-good modules from scratch (wastes tokens). Do not modify the reference trees for PITA features.
-7. Reference sources for borrow/copy: `math_reasoning/` (PITA algorithm), SPPO (preference data/engine patterns), [`verl-tool-lens/benchmarks/math-evaluation-harness`](verl-tool-lens/benchmarks/math-evaluation-harness) (math parse/grade + eval JSONLs @ `9271e69`).
-8. Minimal diffs after copy; params via Hydra; tqdm for long work; no placeholders.
-9. Design until a subtask’s Done-when says otherwise. Prefer locking decisions here over premature code.
-10. Before ending: mark subtask completed/blocked; append Progress log; handoff `subtask_id | done|blocked | next_pending_id`.
-11. Do not invent long S2/S3 roadmaps as shallow stubs. Add later subtasks here with full deep briefs when named.
-12. **Active subtask right now:** `S1-eval-datasets`
+5. **Product under `pita_vllm/`:** runnable code lives only there. Do **not** import/runtime-call `SPPO/`, `refactor_old/`, `math_reasoning/`, or `verl-tool-lens/`.
+6. **Layout:** top-level `train/` and `evaluation/` — self-contained. Do **not** mirror SPPO folder hierarchy wholesale; borrow useful pieces by `cp` into the new layout.
+7. **Reuse by copy:** `cp` from reference trees into `pita_vllm/`, then edit. Do not regenerate large known-good modules; do not modify reference trees for PITA features.
+8. Reference borrow sources: **SPPO** (generate/rank/train orchestration, Accelerate/DeepSpeed recipes, env baseline), **`refactor_old/`** + **math_reasoning** (classifier + guided logits — reference only), **math-evaluation-harness** (math eval later, under `evaluation/`).
+9. Minimal diffs after copy; params via Hydra/YAML; tqdm for long work; no placeholders.
+10. Design until a subtask’s Done-when says otherwise. Prefer locking decisions here over premature code.
+11. Before ending: mark subtask completed/blocked; append Progress log; handoff `subtask_id | done|blocked | next_pending_id`.
+12. Do not invent long S2/S3 roadmaps as shallow stubs. Add later subtasks here with full deep briefs when named.
+13. **Active subtask right now:** `S1-pipeline-design`
 
 ## Goal
 
-Refactor PITA into a maintainable package under [`refactor/`](refactor/):
+Ship PITA under [`pita_vllm/`](pita_vllm/) with a clean train/eval split:
 
 ```text
 for round in 1..N:          # N from config
@@ -47,170 +52,211 @@ once:
 
 | Family | Role | Train / generate (rounds) | Final eval (once) |
 |--------|------|---------------------------|-------------------|
-| **Preference** (primary) | SPPO-sourced prefs / prompts | SPPO UltraFeedback-derived pipeline | TBD in S1 (proposal: AlpacaEval 2) |
-| **Arithmetic** (special case) | Guided math | **DAPO-MATH-17K** | **GSM8K, MATH500, MATH, AIME24** |
+| **Preference** (primary) | SPPO-sourced prefs / prompts + multi-model baselines | SPPO UltraFeedback-derived iters | **AlpacaEval 2** |
+| **Arithmetic** (later) | Guided math | **DAPO-MATH-17K** | **GSM8K, MATH500, MATH, AIME24** |
 
-**Deferred:** AIME25 (add in a later subtask; not in current harness / not blocking S1).
+**Preference baselines — ref + guidance pairs (dataset-agnostic):**
 
-DeepSpeed may later be the training engine; it is **not** the Goal.
+| Baseline | Ref (policy / generate) | Guidance (classifier) |
+|----------|-------------------------|------------------------|
+| llama | `meta-llama/Meta-Llama-3-8B-Instruct` | `meta-llama/Llama-3.2-1B-Instruct` |
+| qwen | `Qwen/Qwen2.5-7B-Instruct` | `Qwen/Qwen2.5-1.5B-Instruct` |
+| mistral | `mistralai/Ministral-3-8B-Instruct-2512` | `mistralai/Ministral-3-3B-Instruct-2512` |
 
-**Build mode:** entire pipeline is owned under `refactor/` (ground-up packaging and wiring). Existing scaffold in [`refactor/todo.md`](refactor/todo.md) and reference trees are **borrow sources** — copy useful files into `refactor/`, then edit; do not leave the product coupled to those repos.
+Prompt Hub (preference rounds): `UCLA-AGI/data-mistral-7b-instruct-sppo-iter{1,2,3}`.
+
+**Build mode:** `pita_vllm/train` and `pita_vllm/evaluation` are separate trees. Algorithms under `train/recipes/{sppo,ipo,kto,pita}`. Shared code in `train/utils`; shared launch/infra configs in `train/configs`; dataset configs in `train/dataset`. Reference trees are borrow-only.
 
 ## Architecture / codebase map
 
-### Algorithm
+### Product root vs references
 
-Legacy truth: [`math_reasoning/`](math_reasoning/) — N-round gen+train (manual CLIs); eval once (`eval_ckpt*.py`). Preference legacy used HH/Alpaca; Goal preference moves to SPPO sources.
+| Path | Role |
+|------|------|
+| [`pita_vllm/`](pita_vllm/) | **Product** |
+| [`pita_vllm/train/`](pita_vllm/train/) | All training / data-gen for rounds — self-contained |
+| [`pita_vllm/evaluation/`](pita_vllm/evaluation/) | Final eval only — hierarchy deferred |
+| [`SPPO/`](SPPO/) | Borrow: env baseline, accelerate YAMLs, generate/rank/pipeline patterns |
+| [`refactor_old/`](refactor_old/) | Borrow: classifier / `CustomValueGuidedLogitProcessor` — **not** product base |
+| [`math_reasoning/`](math_reasoning/) | Borrow: legacy PITA train/gen details |
+| math-evaluation-harness | Borrow later into `evaluation/` |
 
-### Refactor scaffold
+### Locked `pita_vllm/` layout (train-first)
 
 ```text
-cli.generate → generation/ (Ray) → parquet
-cli.train    → training/ (Accelerate) → ckpt_*
-cli.eval     → eval/ + scoring/
+pita_vllm/
+  train/
+    dataset/                 # all dataset configs (preference, math, …)
+    recipes/
+      sppo/                  # algorithm code + sppo-only configs/
+      ipo/
+      kto/
+      pita/                  # PITA code + pita-only configs/ (incl. family model pairs)
+    utils/                   # shared code used by every algorithm
+    configs/                 # shared infra configs (accelerate, deepspeed, …)
+    # launch scripts + environment setup files live here (or pita_vllm root for install — see S0)
+  evaluation/                # stub for now; hierarchy later (AlpacaEval, math suites, …)
 ```
 
-### Math eval harness (borrow source — verified on disk)
+**Separation rules:**
 
-Reference only (not a runtime dependency): [`verl-tool-lens/benchmarks/math-evaluation-harness`](verl-tool-lens/benchmarks/math-evaluation-harness) @ `9271e69` (submodule initialized).
+| Location | Owns |
+|----------|------|
+| `train/dataset/` | Dataset configs only (paths, splits, family, Hub ids for data — not model Hub ids) |
+| `train/recipes/<algo>/` | That algorithm’s code + **its** config folder (loss, hyperparams, PITA model pairs, …) |
+| `train/utils/` | Shared helpers (IO, logging, tokenization helpers, …) — no algo-specific loss |
+| `train/configs/` | Cross-cutting infra (e.g. `accelerate_configs/deepspeed_zero3.yaml`) |
+| `evaluation/` | Out of scope until a later subtask |
 
-When implementing math eval under `refactor/`: **`cp`** needed modules/data into `refactor/`, then edit (Hydra paths, guided-decode outputs, package imports). Do not `import` from the submodule in shipped code.
+**Not required:** mirroring SPPO’s `models_configs/`, `sppo/alignment/`, or handbook leftover recipe trees. SPPO’s three config layers (AE2 `models_configs` vs train `recipes` vs `alignment/configs.py` schema) informed this split; we only keep what we need.
 
-| Reference module | Copy/adapt into `refactor/` for |
-|------------------|----------------------------------|
-| [`parser.py`](verl-tool-lens/benchmarks/math-evaluation-harness/parser.py) | `extract_answer`, `parse_ground_truth`, `parse_question`, `strip_string` |
-| [`grader.py`](verl-tool-lens/benchmarks/math-evaluation-harness/grader.py) | `math_equal` / process-pool grading |
-| [`evaluate.py`](verl-tool-lens/benchmarks/math-evaluation-harness/evaluate.py) | Offline grade → `acc` / `max_acc` |
-| [`data_loader.py`](verl-tool-lens/benchmarks/math-evaluation-harness/data_loader.py) + [`data/`](verl-tool-lens/benchmarks/math-evaluation-harness/data/) | Eval JSONL loaders / vendored benches |
-| [`math_eval.py`](verl-tool-lens/benchmarks/math-evaluation-harness/math_eval.py) | Pipeline shape only — do not require its vLLM path for PITA guided eval |
+**Model pairs:** one candidate per family (llama / qwen / mistral), **independent of dataset type** — same ref/guidance for preference and math. Live under `train/recipes/pita/` (PITA-specific). AE2-style eval model configs belong under `evaluation/` later, not under train.
 
-**Owned in `refactor/` after copy:** parse/grade, eval JSONLs (or copied data), Hydra CLIs, guided generation, Ray, train.  
-Harness metrics to preserve after copy: `acc` ≈ pass@1; `max_acc` ≈ pass@k. No maj@k in harness (legacy PITA had it — decide later).
+### Algorithm loop (unchanged intent)
 
-### Arithmetic data (locked for v1)
-
-**Train / generate only:** DAPO-MATH-17K — Hub [`BytedTsinghua-SIA/DAPO-Math-17k`](https://huggingface.co/datasets/BytedTsinghua-SIA/DAPO-Math-17k). Not an eval set; not in the harness.
-
-**Final eval (once) — all JSONLs present locally:**
-
-| Bench | `data_name` | Path under harness | n | Sample fields |
-|-------|-------------|--------------------|--:|---------------|
-| GSM8K | `gsm8k` | [`data/gsm8k/test.jsonl`](verl-tool-lens/benchmarks/math-evaluation-harness/data/gsm8k/test.jsonl) | 1319 | `question`, `answer` |
-| MATH500 | `math500` | [`data/math500/test.jsonl`](verl-tool-lens/benchmarks/math-evaluation-harness/data/math500/test.jsonl) | 500 | `problem`, `solution`, `answer`, … |
-| MATH | `math` | [`data/math/test.jsonl`](verl-tool-lens/benchmarks/math-evaluation-harness/data/math/test.jsonl) | 5000 | `problem`, `solution`, `level`, `type` |
-| AIME24 | `aime24` | [`data/aime24/test.jsonl`](verl-tool-lens/benchmarks/math-evaluation-harness/data/aime24/test.jsonl) | 30 | `problem`/`question`, `answer`, … |
-
-**Out of v1 scope:** AIME25; harness extras (Minerva, Olympiad, AMC23).  
-**Retired as train sources:** legacy `math_reasoning/dataset/gsm8k_train*`, `math_train*`.
-
-### Preference (open)
-
-SPPO train/gen: UCLA-AGI UltraFeedback-derived iters. SPPO has no real held-out pref test.  
-Proposed final eval: **AlpacaEval 2** — awaiting confirm.
-
-### Hydra sketch (design — implement later)
-
-Separate **round data** from **one-shot eval suites**:
-
-```yaml
-# conceptual — not implemented yet
-dataset:
-  family: arithmetic   # or preference
-  train:
-    name: dapo_math_17k
-    source: BytedTsinghua-SIA/DAPO-Math-17k
-  eval_suites:         # run once after last round
-    - gsm8k
-    - math500
-    - math
-    - aime24
-# preference: train from SPPO sources; eval_suites: [alpaca_eval] once locked
+```text
+for round in 1..N:
+    generate candidates from prompts     # iter1: unguided; iter>1: classifier-guided
+    (optional) rank/score → pairs
+    train PITA classifier                # recipes/pita — not SPPO policy loss
+once:
+    evaluation/ → AlpacaEval 2 (pref) / math suites (later)
 ```
 
-Today’s [`refactor/configs/dataset/*.yaml`](refactor/configs/dataset/) collapse train+eval — replace when implementing.
+### Generation + vLLM (design carried to S1)
+
+Keep vLLM generate path; port PITA guidance to custom LogitsProcessor (`AdapterLogitsProcessor` preferred). Reference: [`refactor_old/models/guidance.py`](refactor_old/models/guidance.py). Details + `cp` list → **S1**.
 
 ```mermaid
 flowchart TD
-  subgraph rounds [Rounds_1_to_N]
-    gen[generate]
-    train[train_classifier]
-    gen --> train
-    train -->|ckpt| gen
+  subgraph trainTree [pita_vllm_train]
+    ds[dataset_configs]
+    recipes[recipes_sppo_ipo_kto_pita]
+    utils[utils_shared]
+    infra[configs_accelerate]
+    ds --> recipes
+    utils --> recipes
+    infra --> recipes
   end
-  rounds -->|final_ckpt| onceEval[evaluate_once]
-  onceEval --> gsm8k[GSM8K]
-  onceEval --> math500[MATH500]
-  onceEval --> mathFull[MATH]
-  onceEval --> aime24[AIME24]
-  onceEval --> prefEval[preference_TBD]
+  trainTree -->|final_ckpt| evalTree[evaluation_later]
 ```
+
+### Preference / arithmetic data (locked; implement later)
+
+- Preference prompts: SPPO Hub `UCLA-AGI/data-mistral-7b-instruct-sppo-iter{1,2,3}`
+- Arithmetic train: DAPO-MATH-17K; eval: GSM8K, MATH500, MATH, AIME24 (AIME25 deferred)
+- Dataset YAMLs will live in `train/dataset/` when added (S1+)
+
+### SPPO config nuance (reference only — do not copy blindly)
+
+| SPPO path | Role | Our analogue |
+|-----------|------|--------------|
+| `models_configs/` | AlpacaEval-only; unused by train | `evaluation/` later |
+| `recipes/uclaml-sppo/*.yaml` | Train run values | `train/recipes/<algo>/` configs |
+| `recipes/accelerate_configs/` | Launch infra | `train/configs/` |
+| `sppo/alignment/configs.py` | Dataclass schema + YAML parser | Schema code in `train/utils` or per-recipe as needed |
 
 ## Locked decisions
 
-- Framing: **PITA refactor** (DeepSpeed = candidate engine later).
-- Loop: **gen + train for N rounds; eval once**.
-- Preference primary; arithmetic special case.
-- Preference train/gen from **SPPO** sources (not HH long-term).
-- **Ground-up under `refactor/`:** we do **not** use reference repos as the product (no runtime imports/subprocess into `math_reasoning/`, SPPO, `verl-tool-lens`). Build the full pipeline ourselves.
-- **Reuse = copy then edit:** prefer `cp` of reference files into `refactor/`, then modify; do not regenerate wholesale; do not edit reference trees for PITA features.
-- Math eval borrow list: harness `parser` / `grader` / `evaluate` / `data_loader` / `data/{gsm8k,math500,math,aime24}`; guided decode owned in `refactor/`.
-- Arithmetic **train:** DAPO-MATH-17K only.
-- Arithmetic **eval (v1):** GSM8K, MATH500, MATH, AIME24 — copy from harness table paths above (or re-host under `refactor/` data).
-- **AIME25 deferred** — do not block S1 or v1 math-eval work.
-- Preference final eval: AlpacaEval 2 proposed, **unconfirmed**.
+- Product root: **`pita_vllm/`** with **`train/`** and **`evaluation/`** (eval hierarchy deferred).
+- **Do not** require full SPPO folder parity; borrow by `cp` into the new layout.
+- **`refactor_old/`** = reference only; never product base.
+- Train layout: `dataset/`, `recipes/{sppo,ipo,kto,pita}/`, `utils/`, `configs/`, launch scripts, env setup.
+- Per-algorithm configs live **inside** that algorithm’s recipe folder; shared infra in `train/configs/`; dataset configs in `train/dataset/`.
+- Model Hub pairs: **one per family**, dataset-agnostic; under **`train/recipes/pita/`**.
+- Loop: gen + train for N rounds; eval once under `evaluation/`.
+- Preference baselines: llama / qwen / mistral pairs as in Goal table.
+- Preference final eval: AlpacaEval 2 (evaluation tree later).
+- Train target for PITA recipe: **classifier**, not SPPO policy loss. SPPO/IPO/KTO recipe slots reserved for baselines/comparisons.
+- Generation direction (S1): vLLM + custom logitsproc; HF fallback only.
+- Arithmetic matrix unchanged; not S0 focus.
 
-## Gaps vs current `refactor/`
+## Gaps vs current trees
 
-- No DAPO-MATH-17K loader; dataset YAMLs still GSM8K/MATH/HH/AlpacaFarm.
-- [`refactor/scoring/arithmetic.py`](refactor/scoring/arithmetic.py) ≠ harness `math_equal`.
-- `cli.eval` arithmetic path is single-dataset legacy-shaped; no multi-suite harness benches.
-- Preference configs still HH / AlpacaFarm / HH-PPL.
-- No N-round orchestrator.
+- `pita_vllm/` tree + env docs + three family model configs exist (S0 done).
+- Guided gen / dataset wiring not designed in detail (S1).
+- Recipe code, dataset YAMLs, logitsproc port still outstanding.
 
 ## Subtasks
 
-### S1 — `S1-eval-datasets` — Lock evaluation (+ arithmetic train) datasets
+### S0 — `S0-train-setup` — Train tree + env + PITA model configs
 
-**Status:** `pending` (design)
+**Status:** `completed`
 
 #### Goal / why
 
-Finish the dataset + harness boundary lock before implementation subtasks (loaders, multi-bench eval, SPPO prefs, orchestration).
+Stand up the product filesystem and environment so later work drops into a stable layout. No algorithm logic yet beyond config stubs for the three PITA family pairs.
 
 #### Read first
 
-- Harness (on disk): `parser.py`, `grader.py`, `evaluate.py`, `data_loader.py`, `data/{gsm8k,math500,math,aime24}/test.jsonl`
-- [`verl-tool-lens/benchmarks/README.md`](verl-tool-lens/benchmarks/README.md)
-- [`math_reasoning/eval_ckpt.py`](math_reasoning/eval_ckpt.py) — guided-decode contrast
-- [`refactor/eval/arithmetic.py`](refactor/eval/arithmetic.py), [`refactor/scoring/arithmetic.py`](refactor/scoring/arithmetic.py), [`refactor/configs/dataset/`](refactor/configs/dataset/)
-- [`SPPO/README.md`](SPPO/README.md) Evaluation (preference)
+- [`SPPO/setup.py`](SPPO/setup.py), [`SPPO/README.md`](SPPO/README.md) (install: conda 3.10, vllm, LLM-Blender, `pip install -e .`)
+- [`SPPO/recipes/accelerate_configs/`](SPPO/recipes/accelerate_configs/)
+- Locked baseline table in this plan (Goal)
+- [`refactor_old/configs/generate.yaml`](refactor_old/configs/generate.yaml) / train.yaml — shape of ref + classifier fields (reference only)
 
 #### Do
 
-1. Keep Locked decisions + tables above as source of truth (amend only if user changes names).
-2. Confirm or defer preference final-eval (AlpacaEval 2).
-3. Finalize Hydra `train` vs `eval_suites` sketch (section above); note replacement of current dataset YAMLs.
-4. List which harness/legacy files will be **`cp`’d into `refactor/`** in the first coding subtask (paths + target dirs) — design only in S1.
-5. Keep AIME25 deferred.
+1. Create `pita_vllm/train/{dataset,recipes,utils,configs}` and `pita_vllm/evaluation/` (empty stub).
+2. Create `pita_vllm/train/recipes/{sppo,ipo,kto,pita}/` each with a `configs/` subfolder (empty or minimal README/gitkeep as needed).
+3. Environment setup starting from **SPPO** (`setup.py` / README install flow): copy/adapt into `pita_vllm` (train-focused); document **additional** PITA packages on top (from `refactor_old` / math_reasoning as needed — e.g. hydra only if we adopt it). Do **not** install the conda env unless the user asks in-session; deliver files + documented steps.
+4. Add **one model-pair config per family** under `train/recipes/pita/configs/` (llama, qwen, mistral) with locked `ref_model_id` / `classifier_model_id` / `classifier_arch`. Dataset-agnostic.
+5. Optionally `cp` shared accelerate YAML into `train/configs/accelerate_configs/` as the first shared infra file.
+6. Placeholder launch script location under `train/` (minimal stub OK only if Done-when allows; prefer real env docs over fake trainers).
 
 #### Do not
 
-- Do not implement DeepSpeed, loaders, or N-round orchestrator in S1.
-- Do not leave math eval calling into the submodule at runtime.
-- Do not modify reference repos (`verl-tool-lens/`, `math_reasoning/`, SPPO) for PITA features.
-- Do not regenerate large borrowable modules from scratch when a `cp` + edit would do.
-- Do not work on AIME25 now.
-- Do not treat DAPO-MATH-17K or SPPO `test.parquet` as final eval.
+- Do not build `evaluation/` hierarchy beyond an empty stub.
+- Do not implement logitsproc, generate loop, or dataset loaders in S0.
+- Do not bulk-`cp` all of SPPO into `train/`.
+- Do not evolve `refactor_old/` or `SPPO/` in place.
+- Do not create dataset-dependent model configs.
 
 #### Done when
 
-- Arithmetic train + v1 eval matrix + harness boundary are locked (largely done after this redo).
-- Preference eval confirmed **or** explicitly deferred with a named follow-up.
-- Progress log reflects submodule init + AIME25 deferral.
+- Directory tree matches the locked layout above.
+- Env setup files + install instructions exist (SPPO baseline + extras list).
+- Three PITA family model-pair configs exist under `recipes/pita/configs/`.
+- Progress log updated; S1 remains pending for pipeline design.
 
 #### Depends on
 
-Preference eval confirm (optional to complete S1 if deferred by name).
+None.
+
+---
+
+### S1 — `S1-pipeline-design` — Preference pipeline + vLLM guidance (design / later impl)
+
+**Status:** `pending` (was former S1-eval-datasets content beyond setup)
+
+#### Goal / why
+
+Lock remaining preference data wiring, vLLM logitsproc port sketch, and concrete `cp` targets into `train/` / later `evaluation/`.
+
+#### Read first
+
+- vLLM custom logitsprocs docs
+- [`SPPO/scripts/generate.py`](SPPO/scripts/generate.py), pipeline scripts
+- [`refactor_old/models/guidance.py`](refactor_old/models/guidance.py)
+
+#### Do
+
+1. Preference dataset configs under `train/dataset/`.
+2. Logitsproc port sketch + `extra_args` schema.
+3. `cp` target list from SPPO / refactor_old / math_reasoning into `train/recipes/pita` and `train/utils`.
+4. Keep arithmetic deferred.
+
+#### Do not
+
+- Do not reopen train/evaluation layout unless user asks.
+- Do not implement full eval tree yet.
+
+#### Done when
+
+- Design artifacts recorded in this plan; ready for implementation subtasks as named.
+
+#### Depends on
+
+`S0-train-setup` completed (tree + env + family configs exist).
 
 ## Progress log
 
@@ -226,15 +272,24 @@ Preference eval confirm (optional to complete S1 if deferred by name).
 ### Entries
 
 ### 2026-07-14 — plan history (compressed)
-- Was: DeepSpeed-framed plan → reframed to PITA refactor; DAPO-MATH-17K train; multi-bench eval; harness as reference while submodule empty.
-- Next: redo below.
+- Was: DeepSpeed-framed plan → PITA refactor; arithmetic benches locked; harness verified.
+- Next: continued design.
 
-### 2026-07-14 — S1-eval-datasets — design (plan redo)
-- Changes: **Redid plan** after submodule init. Verified harness @ `9271e69` with local counts: gsm8k 1319, math500 500, math 5000, aime24 30. **AIME25 deferred**. Locked v1 arithmetic eval benches. Hydra sketch + gaps documented.
-- Follow-ups: Ground-up / copy-reuse rule (next entry).
-- Next: `S1-eval-datasets`
+### 2026-07-14 — guidance / Ministral pairs
+- Locked ref+guidance: Llama 8B+1B; Qwen 7B+1.5B; Ministral-3 8B+3B.
 
-### 2026-07-14 — S1-eval-datasets — design (ground-up + copy)
-- Changes: Locked build mode: **entire pipeline ground-up in `refactor/`**; reference repos are **borrow sources only** (not runtime deps). Reuse = **`cp` into `refactor/` then edit**; do not regenerate large known modules; do not patch reference trees for PITA.
-- Follow-ups: Confirm/defer preference final-eval; list concrete `cp` targets; then close S1 or name first coding subtask.
-- Next: `S1-eval-datasets`
+### 2026-07-23 — SPPO skeleton + vLLM logitsproc
+- Pivot toward SPPO orchestration; guided gen via vLLM custom logitsproc (HF fallback).
+
+### 2026-07-23 — pita_vllm product root
+- Renamed prior scaffold to `refactor_old/` (reference only). Product root `pita_vllm/`.
+
+### 2026-07-23 — S0-train-setup — design (train/evaluation split)
+- Changes: **Superseded SPPO folder mirroring.** Locked top-level `train/` + `evaluation/`. Train contains `dataset/`, `recipes/{sppo,ipo,kto,pita}/` (each with own configs), `utils/`, `configs/` (shared accelerate etc.), launch scripts + env setup. Eval hierarchy deferred. Former S1 content moved to `S1-pipeline-design`. Model pairs: one per family under `recipes/pita/configs/`, dataset-agnostic. Env starts from SPPO + extras.
+- Follow-ups: On execute — mkdir tree, env files, three family YAMLs; then S1 design.
+- Next: `S0-train-setup`
+
+### 2026-07-23 — S0-train-setup — completed
+- Changes: Created `pita_vllm/` with locked `train/` + `evaluation/` stub. Train has `dataset/`, `recipes/{sppo,ipo,kto,pita}/configs/`, `utils/`, `configs/accelerate_configs/` (`deepspeed_zero3.yaml`, `multi_gpu.yaml` cp’d from SPPO), `launch.sh`. Env: `pita_vllm/setup.py` (SPPO deps + hydra/omegaconf) and `pita_vllm/README.md` install steps (conda 3.10, vllm, LLM-Blender, `pip install -e .`) — env not installed. Family model pairs: `train/recipes/pita/configs/{llama,qwen,mistral}.yaml` with locked Hub ids + `classifier_arch`.
+- Follow-ups: S1 — preference dataset configs, logitsproc port sketch, concrete `cp` targets.
+- Next: `S1-pipeline-design`
