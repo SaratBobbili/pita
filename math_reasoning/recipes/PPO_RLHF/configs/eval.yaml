@@ -1,0 +1,24 @@
+model_id: checkpoints/llama_3_8b_instruct_gsm8k/ppo_rlhf/policy
+dataset_type: gsm8k
+data_path: dataset/gsm8k_test.jsonl
+train_eval_save_path: dataset/gsm8k_test_eval.json
+output_dir: checkpoints/llama_3_8b_instruct_gsm8k/ppo_rlhf/policy/eval_gsm8k
+batch_size: 8
+num_samples: 8
+use_chat_template: 1
+temperature: 0.8
+top_p: 0.9
+max_prompt_length: -1
+max_new_tokens: 1024
+dtype: bfloat16
+match_fn_type: symbolic
+force: 0
+seed: 47
+math_reasoning_root: null
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .
+  output_subdir: null

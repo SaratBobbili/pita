@@ -1,0 +1,49 @@
+model_id: meta-llama/Meta-Llama-3-8B-Instruct
+ref_model_id: meta-llama/Meta-Llama-3-8B-Instruct
+
+data_paths:
+  - collected_data/llama_3_8b_instruct_gsm8k/all_train_pref_data.jsonl
+train_eval_save_path: dataset/gsm8k_train_eval.json
+prepared_data_dir: recipes/DPO/data
+output_dir: checkpoints/llama_3_8b_instruct_gsm8k/dpo_full
+deepspeed_config: recipes/DPO/configs/deepspeed_zero3.json
+
+beta: 0.1
+learning_rate: 5.0e-7
+num_train_epochs: 1
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 4
+gradient_accumulation_steps: 4
+max_length: 2048
+max_prompt_length: 512
+warmup_ratio: 0.1
+weight_decay: 0.0
+max_grad_norm: 1.0
+seed: 47
+bf16: true
+gradient_checkpointing: true
+dataloader_num_workers: 4
+logging_steps: 10
+save_strategy: epoch
+save_total_limit: 2
+eval_strategy: steps
+eval_steps: 500
+report_to: wandb
+wandb_project: pita-dpo
+run_name: dpo_full_gsm8k
+
+precompute_ref_log_probs: false
+dataset_num_proc: 8
+
+efficiency:
+  save_raw_efficiency: true
+  log_every: 1
+
+math_reasoning_root: null
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .
+  output_subdir: null

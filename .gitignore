@@ -1,3 +1,6 @@
 math_reasoning/collected_data
 */__pycache__
 *.pyc
+*.arrow
+math_reasoning/recipes/DPO/data/
+math_reasoning/recipes/PPO_RLHF/data/
