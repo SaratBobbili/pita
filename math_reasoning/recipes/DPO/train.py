@@ -240,13 +240,21 @@ def main(cfg: DictConfig):
     tokenizer.save_pretrained(output_dir)
 
     if trainer.accelerator.is_main_process:
+        wall = float(train_result.metrics.get("train_runtime", 0.0))
+        world_size = int(trainer.args.world_size)
         stats = {
-            "train_runtime": float(train_result.metrics.get("train_runtime", 0.0)),
+            "train_runtime": wall,
+            "wall_clock_time_sec": wall,
+            "gpu_hours": wall / 3600.0 * world_size,
+            "world_size": world_size,
             "train_samples_per_second": float(
                 train_result.metrics.get("train_samples_per_second", 0.0)
             ),
             "train_steps_per_second": float(
                 train_result.metrics.get("train_steps_per_second", 0.0)
+            ),
+            "examples_per_sec": float(
+                train_result.metrics.get("train_samples_per_second", 0.0)
             ),
             "train_loss": float(train_result.metrics.get("train_loss", 0.0)),
             "num_trainable_params": int(num_trainable),

@@ -10,7 +10,7 @@ deepspeed_config: recipes/DPO/configs/deepspeed_zero3.json
 
 beta: 0.1
 learning_rate: 5.0e-7
-num_train_epochs: 1
+num_train_epochs: 10
 per_device_train_batch_size: 4
 per_device_eval_batch_size: 4
 gradient_accumulation_steps: 4
