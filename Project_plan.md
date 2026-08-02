@@ -51,8 +51,7 @@ math_reasoning/recipes/
     configs/accelerate/deepspeed_zero3.yaml
     prepare_data.py         # pref jsonl → HF DatasetDict
     train.py                # TRL DPOTrainer full FT
-    eval.py                 # GSM8K/MATH policy eval
-    launch.sh / launch_eval.sh
+    launch.sh / launch_eval.sh  # eval → math_reasoning/eval_ckpt.py eta=0
     data/                   # prepared pairs
   PPO_RLHF/
     configs/{train_reward,train_ppo,eval}.yaml
@@ -72,7 +71,7 @@ flowchart LR
   hfds --> dpo[DPO/train.py ZeRO3]
   hfds --> rm[PPO_RLHF/train_reward.py]
   rm --> ppo[PPO_RLHF/train_ppo.py]
-  dpo --> evalD[DPO/eval.py]
+  dpo --> evalD["eval_ckpt.py eta=0"]
   ppo --> evalP[PPO_RLHF/eval.py]
 ```
 
@@ -91,7 +90,9 @@ flowchart LR
 # DPO
 python recipes/DPO/prepare_data.py
 bash recipes/DPO/launch.sh
-bash recipes/DPO/launch_eval.sh
+# eval uses eval_ckpt.py --eta 0 with MODEL_ID=DPO checkpoint (classifier unused)
+MODEL_ID=checkpoints/llama_3_8b_instruct_gsm8k/dpo_full/checkpoint-4205 \
+  bash recipes/DPO/launch_eval.sh
 python aggregate_efficiency_stats.py --efficiency_log_dir checkpoints/llama_3_8b_instruct_gsm8k/dpo_full/efficiency
 
 # PPO/RLHF
@@ -187,5 +188,27 @@ Changes:
 - Confirmed W&B synchronization and shared dataset-cache reuse.
 
 Follow-ups: allow the active DPO training run to complete.
+
+Next: none
+
+### 2026-08-01 — S1-dpo-pipeline — completed
+
+Changes:
+- Installed `math-verify==0.7.0` (+ `latex2sympy2_extended`) in conda env `arpo` so DPO `eval.py` can import `accuracy_utils`.
+- Added `math-verify==0.7.0` to `math_reasoning/recipes/requirements.txt`.
+- Confirmed epoch checkpoints `checkpoint-4205` (epoch 5) and `checkpoint-3364` (epoch 4) are ready for GSM8K eval after stopping mid-run.
+
+Follow-ups: run `launch_eval.sh` against both checkpoints; do not use root `dpo_full/` weights (stale from an earlier short run).
+
+Next: none
+
+### 2026-08-02 — S1-dpo-pipeline — completed
+
+Changes:
+- Replaced custom `recipes/DPO/eval.py` with `launch_eval.sh` wrapping `math_reasoning/eval_ckpt.py --eta 0` (same unguided pattern as `ref_pass*`).
+- `--ref_model_id` points at the DPO checkpoint; dummy PITA `ckpt_10000` classifier is loaded but guidance is disabled.
+- Updated `configs/eval.yaml` and architecture map accordingly.
+
+Follow-ups: run epoch-5 and epoch-4 evals via the new launch script.
 
 Next: none
