@@ -212,3 +212,13 @@ Changes:
 Follow-ups: run epoch-5 and epoch-4 evals via the new launch script.
 
 Next: none
+
+### 2026-08-02 — S1-dpo-pipeline — completed
+
+Changes:
+- Reverted invasive `eval_ckpt.py` / `utils.py` eta=0 skips so guided eval stays identical to before.
+- Moved `_prepare_4d_causal_attention_mask_with_cache_position` import into the guided V path in `classifier.py` (lazy), so `eta=0` on transformers 4.51/`arpo` can import classifier without hitting the removed private API.
+
+Follow-ups: rerun DPO `launch_eval.sh` for checkpoint-4205 / checkpoint-3364.
+
+Next: none

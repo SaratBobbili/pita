@@ -7,7 +7,6 @@ from torch.nn import BCEWithLogitsLoss, MSELoss
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import LlamaModel, LogitsProcessor
-from transformers.models.llama.modeling_llama import _prepare_4d_causal_attention_mask_with_cache_position
 
 
 class CustomLlamaForSequenceClassification(LlamaPreTrainedModel):
@@ -268,6 +267,10 @@ class CustomLlamaForSequenceClassification(LlamaPreTrainedModel):
                 expanded_attention_mask = torch.cat([attention_mask, torch.ones((bs, top_k), dtype=torch.long, device=attention_mask.device)], dim=1)
                 cache_position = torch.arange(attention_mask.shape[1], expanded_attention_mask.shape[1], device=device)
                 actual_position_ids = (torch.ones((1, top_k)) * attention_mask.shape[1]).to(dtype=attention_mask.dtype, device=device)
+                # Private HF helper; only needed for guided V decoding (not eta=0).
+                from transformers.models.llama.modeling_llama import (
+                    _prepare_4d_causal_attention_mask_with_cache_position,
+                )
                 actual_attention_mask = _prepare_4d_causal_attention_mask_with_cache_position(expanded_attention_mask, top_k, expanded_attention_mask.shape[1], dtype=dtype, device=device, min_dtype=min_dtype, cache_position=cache_position, batch_size=input_ids.shape[0])
                 diagonal_mask = torch.full((top_k, top_k), min_dtype)
                 diagonal_mask.fill_diagonal_(0)

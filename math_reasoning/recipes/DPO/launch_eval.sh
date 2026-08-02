@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Evaluate a DPO policy via math_reasoning/eval_ckpt.py with eta=0
-# (unguided generation; classifier is loaded but disabled — same as ref_pass*).
+# (unguided generation; same pattern as ref_pass*).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
