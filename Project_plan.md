@@ -24,18 +24,14 @@ todos:
 
 ## Session system prompt
 
-1. Read this file (Goal, map, locked decisions, active subtask, Progress log).
+Working rules (writable trees, reuse by `cp`, no environment work, style, testing) live in
+[`CLAUDE.md`](CLAUDE.md) and are not repeated here.
+
+1. Read `CLAUDE.md`, then this file (Goal, map, locked decisions, active subtask, log).
 2. Work **only** the active pending subtask (first pending todo, or the id named).
-3. **`pita/` is the only writable tree.** `SPPO/`, `refactor_old/`, `math_reasoning/`,
-   `verl-tool-lens/` are read-only reference.
-4. **Reuse by `cp` then edit.** Never retype or regenerate a known-good module; copy it
-   and apply a minimal diff. Name the source in the module docstring.
-5. **No environment work.** Conda envs and package installs are the user's. Declare
-   dependencies; do not install them. Read-only inspection of envs is fine.
-6. Keep it one designed codebase: clean configs, one trainer, one generation path, no
-   dead placeholders.
-7. Before ending: mark the subtask, append to the Progress log.
-8. **Active subtask right now:** `S2-gpu-bringup`
+3. Do not reopen locked decisions unless asked.
+4. Before ending: mark the subtask, append to the Progress log.
+5. **Active subtask right now:** `S2-gpu-bringup`
 
 ## Goal
 
@@ -119,32 +115,19 @@ flowchart LR
 
 ## Environment
 
-Use the existing **`pita`** conda env
-(`/scratch/user/saratb_tamu.edu/miniconda3/envs/pita`): vLLM 0.11.0, torch 2.8.0,
-transformers 5.12.1, flash-attn 2.8.1, accelerate 1.14.0. All verified present, and the
-33 CPU tests pass in it.
-
-**Do not use SPPO's env.** It pins `torch==2.1.2` / `transformers==4.42.4` / `trl==0.9.6`,
-which predate the vLLM V1 logits-processor API this project is built on.
-
-Still to install:
+Env choice and versions: see [`CLAUDE.md`](CLAUDE.md) §3. Still to install (by the user):
 
 | Package | For | Note |
 |---|---|---|
 | `alpaca-eval` | judging | needs `OPENAI_API_KEY` |
 | `llm-blender` | PairRM ranking | may pin `transformers<5`; if it fights the main env, put it in its own env — `scripts/rank.py` already runs as a separate process |
 
-## Upstream defects fixed (do not reintroduce)
+## Upstream defects fixed
 
-1. **`expectation` guidance offset.** `refactor_old/models/guidance.py:84-86` and all three
-   `math_reasoning` classifier variants clamp the *odds ratio* to `<= 1-1e-6`, forcing
-   every offset non-positive — guidance could only suppress tokens, never boost them. The
-   correct offset is `eta * z`, since `sigmoid(z)/(1-sigmoid(z)) == exp(z)`. Regression
-   test in `tests/test_guidance_cache.py`. Every shipped `expectation` number upstream is
-   suspect, including `checkpoints/alpaca/`.
-2. **Pad leakage.** Upstream stored the already-padded prompt row and the collator marked
-   those pads as attended. Prompts are tokenized unpadded; batches are right-padded, which
-   also fixes the position-id shift left padding caused silently.
+Both are described in [`CLAUDE.md`](CLAUDE.md) §7 and fixed in `pita/`. Consequence for
+this project: **every legacy `inference_mode=expectation` result is suspect**, including
+`math_reasoning/checkpoints/alpaca/ckpt_25000`, so there is no usable historical AlpacaEval
+baseline to compare against — use `eta=0` from this codebase instead.
 
 ## Subtasks
 
