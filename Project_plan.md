@@ -1,295 +1,212 @@
 ---
-name: PITA Refactor
+name: PITA on AlpacaEval
 overview: >-
-  Product under pita_vllm/ with top-level train/ and evaluation/. Train is
-  self-contained (dataset, recipes per algorithm, utils, configs, launch, env).
-  Borrow from SPPO / refactor_old / math_reasoning by cp+edit; no runtime
-  coupling. Preference-first baselines; vLLM guided decode; arithmetic later.
+  PITA rebuilt under pita/ as a model-agnostic package. Frozen policy, trained value
+  classifier, vLLM-guided decoding. On-policy rounds on SPPO infrastructure, scored by
+  AlpacaEval 2 length-controlled win rate. 8x H200.
 todos:
-  - id: S0-train-setup
+  - id: S1-package
     content: >-
-      Create pita_vllm/train layout (dataset, recipes/{sppo,ipo,kto,pita},
-      utils, configs); env setup from SPPO + PITA extras; PITA family model
-      configs under recipes/pita; evaluation/ stub only
+      Build pita/ — classifier, vLLM guidance processor, data, trainer, scripts,
+      recipes, AlpacaEval generation, CPU tests
     status: completed
-  - id: S1-pipeline-design
+  - id: S2-gpu-bringup
     content: >-
-      Preference datasets/baselines lock details; vLLM logitsproc port sketch;
-      cp target lists; wire generate/train loop design (was prior S1 work)
+      First GPU run: vLLM-vs-HF guidance parity, then a tiny end-to-end round
+      (generate -> rank -> build -> train -> eval)
+    status: pending
+  - id: S3-full-run
+    content: 3 rounds on 8x H200, AlpacaEval 805 + judge, eta sweep vs eta=0 baseline
     status: pending
 ---
 
-
-# PITA Refactor
+# PITA on AlpacaEval
 
 ## Session system prompt
 
-1. Read this root `Project_plan.md` (Goal, map, locked decisions, active subtask deep brief, Progress log).
-2. Work **only** the active pending subtask (first pending todo, or the id the user names).
-3. Do not reopen locked decisions unless the user explicitly asks.
-4. Before editing: open files named in that subtask’s deep brief; understand the call graph.
-5. **Product under `pita_vllm/`:** runnable code lives only there. Do **not** import/runtime-call `SPPO/`, `refactor_old/`, `math_reasoning/`, or `verl-tool-lens/`.
-6. **Layout:** top-level `train/` and `evaluation/` — self-contained. Do **not** mirror SPPO folder hierarchy wholesale; borrow useful pieces by `cp` into the new layout.
-7. **Reuse by copy:** `cp` from reference trees into `pita_vllm/`, then edit. Do not regenerate large known-good modules; do not modify reference trees for PITA features.
-8. Reference borrow sources: **SPPO** (generate/rank/train orchestration, Accelerate/DeepSpeed recipes, env baseline), **`refactor_old/`** + **math_reasoning** (classifier + guided logits — reference only), **math-evaluation-harness** (math eval later, under `evaluation/`).
-9. Minimal diffs after copy; params via Hydra/YAML; tqdm for long work; no placeholders.
-10. Design until a subtask’s Done-when says otherwise. Prefer locking decisions here over premature code.
-11. Before ending: mark subtask completed/blocked; append Progress log; handoff `subtask_id | done|blocked | next_pending_id`.
-12. Do not invent long S2/S3 roadmaps as shallow stubs. Add later subtasks here with full deep briefs when named.
-13. **Active subtask right now:** `S1-pipeline-design`
+1. Read this file (Goal, map, locked decisions, active subtask, Progress log).
+2. Work **only** the active pending subtask (first pending todo, or the id named).
+3. **`pita/` is the only writable tree.** `SPPO/`, `refactor_old/`, `math_reasoning/`,
+   `verl-tool-lens/` are read-only reference.
+4. **Reuse by `cp` then edit.** Never retype or regenerate a known-good module; copy it
+   and apply a minimal diff. Name the source in the module docstring.
+5. **No environment work.** Conda envs and package installs are the user's. Declare
+   dependencies; do not install them. Read-only inspection of envs is fine.
+6. Keep it one designed codebase: clean configs, one trainer, one generation path, no
+   dead placeholders.
+7. Before ending: mark the subtask, append to the Progress log.
+8. **Active subtask right now:** `S2-gpu-bringup`
 
 ## Goal
 
-Ship PITA under [`pita_vllm/`](pita_vllm/) with a clean train/eval split:
+PITA ([arXiv:2507.20067](https://arxiv.org/abs/2507.20067)) freezes the LLM and trains a
+small value classifier that tilts token logits at inference time, learning directly from
+preference feedback with no reward model.
 
 ```text
-for round in 1..N:          # N from config
-    generate training data  # classifier from prior round (η=0 / zero on round 1)
-    train classifier
+for round in 1..3:
+    sample K=5 responses/prompt   # frozen policy, guided by classifier_{r-1}
+    rank with PairRM              # preference feedback
+    reward = Bradley-Terry win rate
+    train classifier_r
 once:
-    evaluate final classifier on fixed held-out eval suites
+    AlpacaEval 2                  # held-out LC win rate
 ```
 
-| Family | Role | Train / generate (rounds) | Final eval (once) |
-|--------|------|---------------------------|-------------------|
-| **Preference** (primary) | SPPO-sourced prefs / prompts + multi-model baselines | SPPO UltraFeedback-derived iters | **AlpacaEval 2** |
-| **Arithmetic** (later) | Guided math | **DAPO-MATH-17K** | **GSM8K, MATH500, MATH, AIME24** |
+Round 1 samples unguided (`eta=0`); later rounds sample under the previous classifier, so
+the training distribution tracks the policy guidance actually produces. Prompt sets are
+SPPO's `UCLA-AGI/data-mistral-7b-instruct-sppo-iter{1,2,3}`, which makes the AlpacaEval
+number directly comparable to SPPO's published Llama-3-8B result.
 
-**Preference baselines — ref + guidance pairs (dataset-agnostic):**
-
-| Baseline | Ref (policy / generate) | Guidance (classifier) |
-|----------|-------------------------|------------------------|
-| llama | `meta-llama/Meta-Llama-3-8B-Instruct` | `meta-llama/Llama-3.2-1B-Instruct` |
-| qwen | `Qwen/Qwen2.5-7B-Instruct` | `Qwen/Qwen2.5-1.5B-Instruct` |
-| mistral | `mistralai/Ministral-3-8B-Instruct-2512` | `mistralai/Ministral-3-3B-Instruct-2512` |
-
-Prompt Hub (preference rounds): `UCLA-AGI/data-mistral-7b-instruct-sppo-iter{1,2,3}`.
-
-**Build mode:** `pita_vllm/train` and `pita_vllm/evaluation` are separate trees. Algorithms under `train/recipes/{sppo,ipo,kto,pita}`. Shared code in `train/utils`; shared launch/infra configs in `train/configs`; dataset configs in `train/dataset`. Reference trees are borrow-only.
+**Baselines to beat:** unguided `eta=0` (same code path, no classifier loaded), and
+SPPO's Llama-3-8B-Instruct-SPPO-Iter3.
 
 ## Architecture / codebase map
 
-### Product root vs references
-
-| Path | Role |
-|------|------|
-| [`pita_vllm/`](pita_vllm/) | **Product** |
-| [`pita_vllm/train/`](pita_vllm/train/) | All training / data-gen for rounds — self-contained |
-| [`pita_vllm/evaluation/`](pita_vllm/evaluation/) | Final eval only — hierarchy deferred |
-| [`SPPO/`](SPPO/) | Borrow: env baseline, accelerate YAMLs, generate/rank/pipeline patterns |
-| [`refactor_old/`](refactor_old/) | Borrow: classifier / `CustomValueGuidedLogitProcessor` — **not** product base |
-| [`math_reasoning/`](math_reasoning/) | Borrow: legacy PITA train/gen details |
-| math-evaluation-harness | Borrow later into `evaluation/` |
-
-### Locked `pita_vllm/` layout (train-first)
-
 ```text
-pita_vllm/
-  train/
-    dataset/                 # all dataset configs (preference, math, …)
-    recipes/
-      sppo/                  # algorithm code + sppo-only configs/
-      ipo/
-      kto/
-      pita/                  # PITA code + pita-only configs/ (incl. family model pairs)
-    utils/                   # shared code used by every algorithm
-    configs/                 # shared infra configs (accelerate, deepspeed, …)
-    # launch scripts + environment setup files live here (or pita_vllm root for install — see S0)
-  evaluation/                # stub for now; hierarchy later (AlpacaEval, math suites, …)
+pita/                        <- the only writable tree
+  pita/
+    classifier.py   ValueClassifier: AutoModel backbone + Q or V value head
+    guidance.py     PITAGuidedLogitsProcessor (vLLM V1) + BankCache
+    masking.py      4D attention masks, plain torch
+    data.py         ranked generations -> training tensors
+    trainer.py      Accelerate loop (DDP)
+    configs.py      dataclasses + YAML/CLI parser
+    run_pita.py     training entry
+  scripts/          generate combine preload rank build_dataset (+ generate.sh pipeline.sh)
+  recipes/          accelerate_configs/ + pita/{llama3,qwen25,ministral}.yaml
+  evaluation/alpaca_eval/generate.py
+  tests/            33 CPU tests
+  run_pita_llama-3.sh
 ```
-
-**Separation rules:**
-
-| Location | Owns |
-|----------|------|
-| `train/dataset/` | Dataset configs only (paths, splits, family, Hub ids for data — not model Hub ids) |
-| `train/recipes/<algo>/` | That algorithm’s code + **its** config folder (loss, hyperparams, PITA model pairs, …) |
-| `train/utils/` | Shared helpers (IO, logging, tokenization helpers, …) — no algo-specific loss |
-| `train/configs/` | Cross-cutting infra (e.g. `accelerate_configs/deepspeed_zero3.yaml`) |
-| `evaluation/` | Out of scope until a later subtask |
-
-**Not required:** mirroring SPPO’s `models_configs/`, `sppo/alignment/`, or handbook leftover recipe trees. SPPO’s three config layers (AE2 `models_configs` vs train `recipes` vs `alignment/configs.py` schema) informed this split; we only keep what we need.
-
-**Model pairs:** one candidate per family (llama / qwen / mistral), **independent of dataset type** — same ref/guidance for preference and math. Live under `train/recipes/pita/` (PITA-specific). AE2-style eval model configs belong under `evaluation/` later, not under train.
-
-### Algorithm loop (unchanged intent)
-
-```text
-for round in 1..N:
-    generate candidates from prompts     # iter1: unguided; iter>1: classifier-guided
-    (optional) rank/score → pairs
-    train PITA classifier                # recipes/pita — not SPPO policy loss
-once:
-    evaluation/ → AlpacaEval 2 (pref) / math suites (later)
-```
-
-### Generation + vLLM (design carried to S1)
-
-Keep vLLM generate path; port PITA guidance to custom LogitsProcessor (`AdapterLogitsProcessor` preferred). Reference: [`refactor_old/models/guidance.py`](refactor_old/models/guidance.py). Details + `cp` list → **S1**.
 
 ```mermaid
-flowchart TD
-  subgraph trainTree [pita_vllm_train]
-    ds[dataset_configs]
-    recipes[recipes_sppo_ipo_kto_pita]
-    utils[utils_shared]
-    infra[configs_accelerate]
-    ds --> recipes
-    utils --> recipes
-    infra --> recipes
-  end
-  trainTree -->|final_ckpt| evalTree[evaluation_later]
+flowchart LR
+  prompts[SPPO prompt set] --> gen[scripts/generate.py<br/>vLLM + guidance]
+  ckpt[classifier r-1] --> gen
+  gen --> comb[combine_generate.py] --> rank[rank.py PairRM]
+  rank --> build[build_dataset.py<br/>scores to rewards] --> train[pita.run_pita]
+  train --> ckpt
+  train --> ae[evaluation/alpaca_eval] --> judge[alpaca_eval judge]
 ```
 
-### Preference / arithmetic data (locked; implement later)
+### Reference trees (read-only, borrow by cp)
 
-- Preference prompts: SPPO Hub `UCLA-AGI/data-mistral-7b-instruct-sppo-iter{1,2,3}`
-- Arithmetic train: DAPO-MATH-17K; eval: GSM8K, MATH500, MATH, AIME24 (AIME25 deferred)
-- Dataset YAMLs will live in `train/dataset/` when added (S1+)
-
-### SPPO config nuance (reference only — do not copy blindly)
-
-| SPPO path | Role | Our analogue |
-|-----------|------|--------------|
-| `models_configs/` | AlpacaEval-only; unused by train | `evaluation/` later |
-| `recipes/uclaml-sppo/*.yaml` | Train run values | `train/recipes/<algo>/` configs |
-| `recipes/accelerate_configs/` | Launch infra | `train/configs/` |
-| `sppo/alignment/configs.py` | Dataclass schema + YAML parser | Schema code in `train/utils` or per-recipe as needed |
+| Path | What it is |
+|------|------------|
+| `SPPO/` | Infra shape: generate/rank/pipeline scripts, accelerate configs, arg parser |
+| `refactor_old/` | Previous standalone refactor: classifier, guidance math, trainer |
+| `math_reasoning/` | Original research code; `my_alpaca_eval_code/` has the AlpacaEval writer |
+| `verl-tool-lens/` | Unrelated |
 
 ## Locked decisions
 
-- Product root: **`pita_vllm/`** with **`train/`** and **`evaluation/`** (eval hierarchy deferred).
-- **Do not** require full SPPO folder parity; borrow by `cp` into the new layout.
-- **`refactor_old/`** = reference only; never product base.
-- Train layout: `dataset/`, `recipes/{sppo,ipo,kto,pita}/`, `utils/`, `configs/`, launch scripts, env setup.
-- Per-algorithm configs live **inside** that algorithm’s recipe folder; shared infra in `train/configs/`; dataset configs in `train/dataset/`.
-- Model Hub pairs: **one per family**, dataset-agnostic; under **`train/recipes/pita/`**.
-- Loop: gen + train for N rounds; eval once under `evaluation/`.
-- Preference baselines: llama / qwen / mistral pairs as in Goal table.
-- Preference final eval: AlpacaEval 2 (evaluation tree later).
-- Train target for PITA recipe: **classifier**, not SPPO policy loss. SPPO/IPO/KTO recipe slots reserved for baselines/comparisons.
-- Generation direction (S1): vLLM + custom logitsproc; HF fallback only.
-- Arithmetic matrix unchanged; not S0 focus.
+- Product root **`pita/`**; reference trees read-only, reuse by `cp` then edit.
+- **On-policy rounds**, not the legacy offline AlpacaFarm relabeling — that path never ran
+  the loop at all (generation is commented out in `collect_training_data_alpaca.py`).
+- **vLLM V1 custom logits processor** for guidance. One generation path; `eta=0` means
+  unguided and loads no classifier.
+- **Model-agnostic**: backbone composed via `AutoModel`, no per-arch subclass or registry,
+  masks built locally, `apply_chat_template` instead of model-name sniffing, head width
+  from the **reference** `config.vocab_size`. Adding a family is one YAML.
+- The only structural constraint: policy and classifier must **share a tokenizer**.
+  `validate_pair` checks the real vocabularies at startup.
+- **Q head default**, V supported. Q scores all candidates in one forward; V costs ~`top_k`x.
+- Reward = **Bradley-Terry win rate** (soft BCE target); `--binarize` for SPPO-style pairs.
+- Plain **DDP**, no DeepSpeed — the trainable model is <=2B.
+- Infra mirrors SPPO (argparse + YAML recipes + shell drivers), not Hydra.
+- Generation and judging are **separate steps**; AlpacaEval only needs `model_outputs.json`.
 
-## Gaps vs current trees
+## Environment
 
-- `pita_vllm/` tree + env docs + three family model configs exist (S0 done).
-- Guided gen / dataset wiring not designed in detail (S1).
-- Recipe code, dataset YAMLs, logitsproc port still outstanding.
+Use the existing **`pita`** conda env
+(`/scratch/user/saratb_tamu.edu/miniconda3/envs/pita`): vLLM 0.11.0, torch 2.8.0,
+transformers 5.12.1, flash-attn 2.8.1, accelerate 1.14.0. All verified present, and the
+33 CPU tests pass in it.
+
+**Do not use SPPO's env.** It pins `torch==2.1.2` / `transformers==4.42.4` / `trl==0.9.6`,
+which predate the vLLM V1 logits-processor API this project is built on.
+
+Still to install:
+
+| Package | For | Note |
+|---|---|---|
+| `alpaca-eval` | judging | needs `OPENAI_API_KEY` |
+| `llm-blender` | PairRM ranking | may pin `transformers<5`; if it fights the main env, put it in its own env — `scripts/rank.py` already runs as a separate process |
+
+## Upstream defects fixed (do not reintroduce)
+
+1. **`expectation` guidance offset.** `refactor_old/models/guidance.py:84-86` and all three
+   `math_reasoning` classifier variants clamp the *odds ratio* to `<= 1-1e-6`, forcing
+   every offset non-positive — guidance could only suppress tokens, never boost them. The
+   correct offset is `eta * z`, since `sigmoid(z)/(1-sigmoid(z)) == exp(z)`. Regression
+   test in `tests/test_guidance_cache.py`. Every shipped `expectation` number upstream is
+   suspect, including `checkpoints/alpaca/`.
+2. **Pad leakage.** Upstream stored the already-padded prompt row and the collator marked
+   those pads as attended. Prompts are tokenized unpadded; batches are right-padded, which
+   also fixes the position-id shift left padding caused silently.
 
 ## Subtasks
 
-### S0 — `S0-train-setup` — Train tree + env + PITA model configs
+### S1 — `S1-package` — completed
 
-**Status:** `completed`
+Full package built and committed (`7a9313c`). 33 CPU tests pass.
 
-#### Goal / why
+### S2 — `S2-gpu-bringup` — pending
 
-Stand up the product filesystem and environment so later work drops into a stable layout. No algorithm logic yet beyond config stubs for the three PITA family pairs.
+#### Goal
 
-#### Read first
-
-- [`SPPO/setup.py`](SPPO/setup.py), [`SPPO/README.md`](SPPO/README.md) (install: conda 3.10, vllm, LLM-Blender, `pip install -e .`)
-- [`SPPO/recipes/accelerate_configs/`](SPPO/recipes/accelerate_configs/)
-- Locked baseline table in this plan (Goal)
-- [`refactor_old/configs/generate.yaml`](refactor_old/configs/generate.yaml) / train.yaml — shape of ref + classifier fields (reference only)
+First run on a GPU node. Nothing in the vLLM engine path has executed yet.
 
 #### Do
 
-1. Create `pita_vllm/train/{dataset,recipes,utils,configs}` and `pita_vllm/evaluation/` (empty stub).
-2. Create `pita_vllm/train/recipes/{sppo,ipo,kto,pita}/` each with a `configs/` subfolder (empty or minimal README/gitkeep as needed).
-3. Environment setup starting from **SPPO** (`setup.py` / README install flow): copy/adapt into `pita_vllm` (train-focused); document **additional** PITA packages on top (from `refactor_old` / math_reasoning as needed — e.g. hydra only if we adopt it). Do **not** install the conda env unless the user asks in-session; deliver files + documented steps.
-4. Add **one model-pair config per family** under `train/recipes/pita/configs/` (llama, qwen, mistral) with locked `ref_model_id` / `classifier_model_id` / `classifier_arch`. Dataset-agnostic.
-5. Optionally `cp` shared accelerate YAML into `train/configs/accelerate_configs/` as the first shared infra file.
-6. Placeholder launch script location under `train/` (minimal stub OK only if Done-when allows; prefer real env docs over fake trainers).
+1. **Guidance parity.** Greedy-decode ~16 prompts two ways: the vLLM processor, and a
+   plain HF loop driving the same classifier. Token sequences must match exactly. This is
+   the one test that catches cache desync inside a live engine — a desynced cache does not
+   crash, it quietly degrades guidance. Keep the HF loop a test fixture, never a backend.
+2. **Engine wiring.** Confirm `additional_config["pita"]` reaches the processor inside the
+   engine-core process, that `max_num_seqs x max_model_len` KV bank fits alongside vLLM at
+   `--gpu_memory_utilization 0.80`, and that `apply()` row indices line up with tracked
+   slots under real continuous batching.
+3. **Tiny end-to-end.** ~200 prompts, K=2, 1 round, 1 GPU: generate -> rank -> build ->
+   train -> 20-prompt AlpacaEval generation.
 
-#### Do not
+#### Watch for
 
-- Do not build `evaluation/` hierarchy beyond an empty stub.
-- Do not implement logitsproc, generate loop, or dataset loaders in S0.
-- Do not bulk-`cp` all of SPPO into `train/`.
-- Do not evolve `refactor_old/` or `SPPO/` in place.
-- Do not create dataset-dependent model configs.
-
-#### Done when
-
-- Directory tree matches the locked layout above.
-- Env setup files + install instructions exist (SPPO baseline + extras list).
-- Three PITA family model-pair configs exist under `recipes/pita/configs/`.
-- Progress log updated; S1 remains pending for pipeline design.
-
-#### Depends on
-
-None.
-
----
-
-### S1 — `S1-pipeline-design` — Preference pipeline + vLLM guidance (design / later impl)
-
-**Status:** `pending` (was former S1-eval-datasets content beyond setup)
-
-#### Goal / why
-
-Lock remaining preference data wiring, vLLM logitsproc port sketch, and concrete `cp` targets into `train/` / later `evaluation/`.
-
-#### Read first
-
-- vLLM custom logitsprocs docs
-- [`SPPO/scripts/generate.py`](SPPO/scripts/generate.py), pipeline scripts
-- [`refactor_old/models/guidance.py`](refactor_old/models/guidance.py)
-
-#### Do
-
-1. Preference dataset configs under `train/dataset/`.
-2. Logitsproc port sketch + `extra_args` schema.
-3. `cp` target list from SPPO / refactor_old / math_reasoning into `train/recipes/pita` and `train/utils`.
-4. Keep arithmetic deferred.
-
-#### Do not
-
-- Do not reopen train/evaluation layout unless user asks.
-- Do not implement full eval tree yet.
+- vLLM 0.11.0 against transformers 5.12.1 — imports and the API check out, but full engine
+  startup is untested.
+- `recipes/pita/ministral.yaml` carries unverified model ids
+  (`mistralai/Ministral-3-{8B,3B}-Instruct-2512`). `validate_pair` fails loudly if wrong.
+- Classifier dtype/attn: the backbone is forced to `sdpa` because the 4D masks we build are
+  not expressible in flash-attn.
 
 #### Done when
 
-- Design artifacts recorded in this plan; ready for implementation subtasks as named.
+Parity holds and one tiny round completes end to end.
 
-#### Depends on
+### S3 — `S3-full-run` — pending
 
-`S0-train-setup` completed (tree + env + family configs exist).
+3 rounds on 8x H200 via `run_pita_llama-3.sh`, then AlpacaEval 805 with an eta sweep
+(`0 0.5 1 2 4`), judged with `weighted_alpaca_eval_gpt4_turbo`. Compare LC win rate
+against `eta=0` and SPPO's published number.
 
 ## Progress log
 
-### Template
+### 2026-09-17 — S1-package — completed
 
-```
-### YYYY-MM-DD — <subtask-id> — completed|blocked
-- Changes: ...
-- Follow-ups: ...
-- Next: <subtask-id or none>
-```
+Changes:
+- Renamed `pita_vllm/` -> `pita/`, dropped the unused `train/`+`evaluation/` scaffold.
+- Built the package: model-agnostic `ValueClassifier`, vLLM V1 `PITAGuidedLogitsProcessor`
+  with a self-healing left-aligned KV bank, data/trainer/configs, SPPO-shaped scripts and
+  shell drivers, three recipe YAMLs, AlpacaEval generation, 33 CPU tests.
+- Fixed the two upstream defects above rather than porting them.
+- Deleted the stale DPO/PPO baseline plan and `refactor_old/todo.md`; one plan per repo.
 
-### Entries
+Design note: the classifier cache is treated as pure optimization — each step every row
+recomputes `len(prompt_tok_ids) + len(output_tok_ids)` and replays what it has not
+consumed, so new requests, preemption and recompute all take one path and nothing depends
+on vLLM's scheduling internals.
 
-### 2026-07-14 — plan history (compressed)
-- Was: DeepSpeed-framed plan → PITA refactor; arithmetic benches locked; harness verified.
-- Next: continued design.
+Follow-ups: everything in S2 — no GPU code path has run.
 
-### 2026-07-14 — guidance / Ministral pairs
-- Locked ref+guidance: Llama 8B+1B; Qwen 7B+1.5B; Ministral-3 8B+3B.
-
-### 2026-07-23 — SPPO skeleton + vLLM logitsproc
-- Pivot toward SPPO orchestration; guided gen via vLLM custom logitsproc (HF fallback).
-
-### 2026-07-23 — pita_vllm product root
-- Renamed prior scaffold to `refactor_old/` (reference only). Product root `pita_vllm/`.
-
-### 2026-07-23 — S0-train-setup — design (train/evaluation split)
-- Changes: **Superseded SPPO folder mirroring.** Locked top-level `train/` + `evaluation/`. Train contains `dataset/`, `recipes/{sppo,ipo,kto,pita}/` (each with own configs), `utils/`, `configs/` (shared accelerate etc.), launch scripts + env setup. Eval hierarchy deferred. Former S1 content moved to `S1-pipeline-design`. Model pairs: one per family under `recipes/pita/configs/`, dataset-agnostic. Env starts from SPPO + extras.
-- Follow-ups: On execute — mkdir tree, env files, three family YAMLs; then S1 design.
-- Next: `S0-train-setup`
-
-### 2026-07-23 — S0-train-setup — completed
-- Changes: Created `pita_vllm/` with locked `train/` + `evaluation/` stub. Train has `dataset/`, `recipes/{sppo,ipo,kto,pita}/configs/`, `utils/`, `configs/accelerate_configs/` (`deepspeed_zero3.yaml`, `multi_gpu.yaml` cp’d from SPPO), `launch.sh`. Env: `pita_vllm/setup.py` (SPPO deps + hydra/omegaconf) and `pita_vllm/README.md` install steps (conda 3.10, vllm, LLM-Blender, `pip install -e .`) — env not installed. Family model pairs: `train/recipes/pita/configs/{llama,qwen,mistral}.yaml` with locked Hub ids + `classifier_arch`.
-- Follow-ups: S1 — preference dataset configs, logitsproc port sketch, concrete `cp` targets.
-- Next: `S1-pipeline-design`
+Next: `S2-gpu-bringup`
