@@ -1,0 +1,42 @@
+# PITA recipe: Qwen2.5-7B-Instruct policy guided by a Qwen2.5-1.5B value classifier.
+#
+# The pair must share a tokenizer -- guidance indexes the classifier head with reference
+# token ids. pita.classifier.validate_pair enforces this at startup.
+# Adding a family means copying this file; no code changes.
+
+# --- ModelArguments ---
+ref_model_id: Qwen/Qwen2.5-7B-Instruct      # frozen; never trained
+classifier_model_id: Qwen/Qwen2.5-1.5B-Instruct
+head_type: Q                  # Q scores every candidate in one forward; V costs ~top_k x
+loss_type: bce                # soft PairRM win rates are proper BCE targets
+use_bias: false
+init_mode: reuse              # warm-start the Q head from the backbone's LM head
+num_atoms: 11                 # mle head only
+V_min: 0.0
+V_max: 1.0
+dtype: bfloat16
+
+# --- DataArguments ---
+train_file: datasets/data-qwen2.5-7b-instruct-pita-iter1/train.parquet
+max_length: 2048
+use_all_response_tokens: true
+eval_ratio: 0.1
+eval_max_size: 1000
+preprocessing_num_workers: 8
+
+# --- PITAConfig ---
+output_dir: checkpoints/Qwen2.5-7B-Instruct-PITA-Iter1
+batch_size: 8
+gradient_accumulation_steps: 1
+num_epochs: 1
+learning_rate: 2.0e-5
+weight_decay: 0.01
+warmup_steps: 100
+max_grad_norm: 5.0
+eval_freq: 500
+ckpt_freq: -1
+seed: 47
+gradient_checkpointing: false
+wandb_project: null
+wandb_entity: null
+run_name: null

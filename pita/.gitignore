@@ -1,0 +1,13 @@
+# Round artifacts
+generated/
+ranking/
+datasets/
+checkpoints/
+results/
+generate_log_*.txt
+rank_log_*.txt
+
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
