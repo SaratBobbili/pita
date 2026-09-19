@@ -25,7 +25,7 @@ gradient_checkpointing: true
 dataloader_num_workers: 4
 logging_steps: 10
 save_strategy: epoch
-save_total_limit: 2
+save_total_limit: null
 eval_strategy: steps
 eval_steps: 500
 report_to: wandb

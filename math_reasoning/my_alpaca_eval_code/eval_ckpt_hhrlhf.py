@@ -1,21 +1,14 @@
 import argparse
 import json
 import os
-import sys
 from tqdm import tqdm
 import glob
 import math
 import numpy as np
 import torch
-import torch.nn.functional as F
-from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM, set_seed
+from transformers import AutoTokenizer, AutoModelForCausalLM, set_seed
 import copy
 import datasets
-
-_classifier_dir = os.environ.get("PITA_CLASSIFIER_DIR")
-if _classifier_dir:
-    sys.path.insert(0, _classifier_dir)
-
 from classifier import CustomLlamaForSequenceClassification, CustomValueGuidedLogitProcessor
 from utils_hhrlhf import read_jsonl, tokenize_with_chat_template, \
     perplexity_with_classifier_guidance, write_jsonl, get_parent_directory, resolve_dict_value, write_json_array
@@ -35,7 +28,7 @@ parser.add_argument('--use_bias', default=None, type=int,
                     help='whether to use bias for the classification layer, llama 3 does not have bias')
 parser.add_argument('--data_path', default='tatsu-lab/alpaca_eval', type=str, help='Data to generate outputs for (default is the standard Alpaca-Eval dataset)')
 parser.add_argument('--data_split', default="alpaca_eval", type=str, help='Data split to use (default is given for the tatsu-lab/alpaca_eval dataset)')
-parser.add_argument('--batch_size', default=200, type=int, help='batch size')
+parser.add_argument('--batch_size', default=50, type=int, help='batch size')
 parser.add_argument('--num_samples', default=1, type=int, help='number of samples per problem')
 parser.add_argument('--cd_baseline', default=0, type=int, help='whether to use CD baseline')
 parser.add_argument('--use_chat_template', default=None, type=int, help='whether to use chat template for generation')
@@ -60,8 +53,6 @@ parser.add_argument('--V_max', default=None, type=float, help='V_max for histogr
 parser.add_argument('--shift_reward', default=None, type=float, help='shift reward by value (subtraction)')
 parser.add_argument('--scale_reward', default=None, type=float, help='scale reward by value (multiplication)')
 parser.add_argument('--quick_test', action='store_true', help='whether to run a quick test with 10 samples for debugging purposes')
-parser.add_argument('--eval_ratio', default=1.0, type=float,
-                    help='fraction of eval examples to run on; 1.0 uses all examples')
 parser.add_argument('--prompt_key', default='instruction', type=str,
                     help='dataset field to use as the prompt; if data is a JSON object, object keys are treated as prompts')
 parser.add_argument('--response_1_key', default='output_1', type=str,
@@ -70,8 +61,6 @@ parser.add_argument('--response_2_key', default='output_2', type=str,
                     help='dataset field to use as the second candidate response')
 parser.add_argument('--preference_key', default='preference', type=str,
                     help='dataset field with preferred response label; 1 means output_1 preferred, 2 means output_2 preferred')
-parser.add_argument('--ppl_source', default='guided', choices=['guided', 'reference'], type=str,
-                    help='which distribution to use for perplexity: guided uses classifier-guided logits, reference uses plain ref-model logits')
 
 args = parser.parse_args()
 args_dict = vars(args)
@@ -116,7 +105,6 @@ prompt_key = args.prompt_key
 response_1_key = args.response_1_key
 response_2_key = args.response_2_key
 preference_key = args.preference_key
-ppl_source = args.ppl_source
 
 if output_dir is None:
     output_dir = classifier_ckpt_path
@@ -138,7 +126,6 @@ tokenizer = AutoTokenizer.from_pretrained(ref_model_id)
 classifier_tokenizer = AutoTokenizer.from_pretrained(classifier_model_id)
 assert len(tokenizer) == len(classifier_tokenizer), "tokenizer vocab size mismatch"
 vocab_size = len(tokenizer)
-print("tokenizer vocab_size (num_labels for Q head):", vocab_size)
 if tokenizer.pad_token is None:
     assert 'Llama-3' in ref_model_id
     tokenizer.pad_token = tokenizer.added_tokens_decoder[128002].content  # reserved special token 0
@@ -158,36 +145,11 @@ model_loading_kwargs = {}
 if dtype == 'bfloat16':
     model_loading_kwargs['torch_dtype'] = torch.bfloat16
 ref_model = AutoModelForCausalLM.from_pretrained(ref_model_id, **model_loading_kwargs, device_map=device)
-classifier_config = AutoConfig.from_pretrained(classifier_ckpt_path)
-checkpoint_vocab_size = getattr(classifier_config, "vocab_size", None)
-if classifier_type == "Q":
-    # Q-head width must match the saved score matrix width in the checkpoint.
-    target_num_labels = checkpoint_vocab_size
-    if target_num_labels is None:
-        raise ValueError("classifier checkpoint config is missing vocab_size; cannot size Q-head.")
-    if vocab_size != target_num_labels:
-        print("Tokenizer vocab (%d) differs from checkpoint vocab (%d); using checkpoint vocab for Q-head." % (
-            vocab_size, target_num_labels
-        ))
-else:
-    target_num_labels = 1
-
-# For HF configs, num_labels is derived from id2label length; force both consistently.
-classifier_config.id2label = {i: f"LABEL_{i}" for i in range(target_num_labels)}
-classifier_config.label2id = {v: k for k, v in classifier_config.id2label.items()}
-print("classifier num_labels after config fix:", classifier_config.num_labels)
-classifier_model = CustomLlamaForSequenceClassification.from_pretrained(
-    classifier_ckpt_path,
-    config=classifier_config,
-    **model_loading_kwargs,
-    classifier_type=classifier_type,
-    loss_type=loss_type,
-    use_bias=use_bias,
-    device_map=device,
-    num_atoms=num_atoms,
-    V_min=V_min,
-    V_max=V_max,
-)
+classifier_model = CustomLlamaForSequenceClassification.from_pretrained(classifier_ckpt_path, **model_loading_kwargs,
+                                                                        num_labels=vocab_size, classifier_type=classifier_type,
+                                                                        loss_type=loss_type, use_bias=use_bias,
+                                                                        device_map=device, num_atoms=num_atoms,
+                                                                        V_min=V_min, V_max=V_max)
 
 ref_model.eval()
 classifier_model.eval()
@@ -201,47 +163,6 @@ else:
                                                       value_classifier=classifier_model,
                                                       inference_mode='disabled', top_k=top_k, cd_baseline=cd_baseline,
                                                       use_cache=True)
-
-
-def perplexity_with_reference_model(ref_model, inputs, response_inputs):
-    """
-    Teacher-forced perplexity of continuation tokens under plain reference-model logits.
-    """
-    assert inputs["input_ids"].shape[0] == response_inputs["input_ids"].shape[0]
-    device = inputs["input_ids"].device
-    response_ids = response_inputs["input_ids"]
-    response_mask = response_inputs.get("attention_mask")
-    if response_mask is None:
-        response_mask = torch.ones_like(response_ids)
-    batch_size = inputs["input_ids"].shape[0]
-    ppls = []
-    for b in tqdm(range(batch_size), desc="ref_ppl"):
-        prompt_row = inputs["input_ids"][b: b + 1]
-        prompt_attn = inputs["attention_mask"][b: b + 1]
-        rm = response_mask[b].bool()
-        resp_real = response_ids[b][rm]
-        rlen = int(resp_real.numel())
-        if rlen == 0:
-            ppls.append(torch.tensor(float("nan"), device=device))
-            continue
-        total_nll = torch.zeros((), device=device, dtype=torch.float32)
-        for t in range(rlen):
-            if t == 0:
-                prefix_ids = prompt_row
-                prefix_attn = prompt_attn
-            else:
-                gen_piece = resp_real[:t].unsqueeze(0)
-                prefix_ids = torch.cat([prompt_row, gen_piece], dim=1)
-                gen_attn = torch.ones(1, t, device=device, dtype=prompt_attn.dtype)
-                prefix_attn = torch.cat([prompt_attn, gen_attn], dim=1)
-            with torch.no_grad():
-                out = ref_model(input_ids=prefix_ids, attention_mask=prefix_attn)
-            ref_logits = out.logits[:, -1, :]
-            tok = resp_real[t]
-            log_prob = F.log_softmax(ref_logits.float(), dim=-1)[0, tok]
-            total_nll = total_nll - log_prob
-        ppls.append(torch.exp(total_nll / rlen))
-    return torch.stack(ppls)
 
 if os.path.isfile(args.data_path):
     with open(args.data_path, 'r') as f:
@@ -260,14 +181,6 @@ else:
     inference_eval_examples = datasets.load_dataset(args.data_path, args.data_split)["eval"].to_list()
 if args.quick_test:
     inference_eval_examples = inference_eval_examples[:10]
-if args.eval_ratio <= 0 or args.eval_ratio > 1:
-    raise ValueError(f"eval_ratio must be in (0, 1], got {args.eval_ratio}")
-if args.eval_ratio < 1:
-    target_eval_size = max(1, int(math.ceil(len(inference_eval_examples) * args.eval_ratio)))
-    sampled_indices = np.random.permutation(len(inference_eval_examples))[:target_eval_size]
-    sampled_indices = sorted(sampled_indices.tolist())
-    inference_eval_examples = [inference_eval_examples[i] for i in sampled_indices]
-    print(f"Using eval_ratio={args.eval_ratio}; evaluating {len(inference_eval_examples)} examples")
 assert len(inference_eval_examples) > 0, "evaluation split is empty"
 assert prompt_key in inference_eval_examples[0], f"prompt_key '{prompt_key}' not found in dataset example"
 assert response_1_key in inference_eval_examples[0], f"response_1_key '{response_1_key}' not found in dataset example"
@@ -316,35 +229,23 @@ for i in range(num_samples):
             add_special_tokens=False,
             return_tensors="pt",
         ).to(device)
-        if ppl_source == 'guided':
-            ppl_output_1 = perplexity_with_classifier_guidance(
-                ref_model,
-                tokenizer,
-                logit_processor,
-                current_inputs,
-                response_inputs=response_1_inputs_for_ppl,
-                eta=eta,
-            )
-            ppl_output_2 = perplexity_with_classifier_guidance(
-                ref_model,
-                tokenizer,
-                logit_processor,
-                current_inputs,
-                response_inputs=response_2_inputs_for_ppl,
-                eta=eta,
-            )
-        else:
-            ppl_output_1 = perplexity_with_reference_model(
-                ref_model,
-                current_inputs,
-                response_1_inputs_for_ppl,
-            )
-            ppl_output_2 = perplexity_with_reference_model(
-                ref_model,
-                current_inputs,
-                response_2_inputs_for_ppl,
-            )
-        predicted_preference = torch.where(ppl_output_1 <= ppl_output_2, 1, 2)
+        guided_ppl_output_1 = perplexity_with_classifier_guidance(
+            ref_model,
+            tokenizer,
+            logit_processor,
+            current_inputs,
+            response_inputs=response_1_inputs_for_ppl,
+            eta=eta,
+        )
+        guided_ppl_output_2 = perplexity_with_classifier_guidance(
+            ref_model,
+            tokenizer,
+            logit_processor,
+            current_inputs,
+            response_inputs=response_2_inputs_for_ppl,
+            eta=eta,
+        )
+        predicted_preference = torch.where(guided_ppl_output_1 <= guided_ppl_output_2, 1, 2)
         true_preference = torch.tensor(
             [int(data_to_infer[k][preference_key]) for k in range(batch_start_index, batch_end_index)],
             device=predicted_preference.device,
@@ -359,9 +260,8 @@ for i in range(num_samples):
             with open(current_output_path, 'w') as f:
                 json.dump({
                     'input_ids': current_inputs['input_ids'][k].cpu().tolist(),
-                    'ppl_source': ppl_source,
-                    'ppl_output_1': float(ppl_output_1[k].item()),
-                    'ppl_output_2': float(ppl_output_2[k].item()),
+                    'guided_ppl_output_1': float(guided_ppl_output_1[k].item()),
+                    'guided_ppl_output_2': float(guided_ppl_output_2[k].item()),
                     'predicted_preference': int(predicted_preference[k].item()),
                     'true_preference': int(true_preference[k].item()),
                     'is_success': int(is_success[k].item()),
@@ -377,17 +277,15 @@ for i in range(len(inference_eval_examples)):
         current_output_path = os.path.join(individual_eval_inference_output_dir, f'{i}_r{j}.json')
         assert os.path.exists(current_output_path), f"expect {current_output_path} to exist"
         if j == 0:
-            inference_eval_examples[i]['ppl_source'] = []
-            inference_eval_examples[i]['ppl_output_1'] = []
-            inference_eval_examples[i]['ppl_output_2'] = []
+            inference_eval_examples[i]['guided_ppl_output_1'] = []
+            inference_eval_examples[i]['guided_ppl_output_2'] = []
             inference_eval_examples[i]['predicted_preference'] = []
             inference_eval_examples[i]['is_success'] = []
 
         with open(current_output_path, 'r') as f:
             current_prediction_data = json.load(f)
-        inference_eval_examples[i]['ppl_source'].append(current_prediction_data['ppl_source'])
-        inference_eval_examples[i]['ppl_output_1'].append(current_prediction_data['ppl_output_1'])
-        inference_eval_examples[i]['ppl_output_2'].append(current_prediction_data['ppl_output_2'])
+        inference_eval_examples[i]['guided_ppl_output_1'].append(current_prediction_data['guided_ppl_output_1'])
+        inference_eval_examples[i]['guided_ppl_output_2'].append(current_prediction_data['guided_ppl_output_2'])
         inference_eval_examples[i]['predicted_preference'].append(current_prediction_data['predicted_preference'])
         inference_eval_examples[i]['is_success'].append(current_prediction_data['is_success'])
 
@@ -407,7 +305,6 @@ for j in range(num_samples):
 reward_stats = {
     'num_examples': len(inference_eval_examples),
     'num_samples': num_samples,
-    'ppl_source': ppl_source,
     'total_comparisons': len(all_successes),
     'wins': int(np.sum(all_successes)),
     'win_rate': float(np.mean(all_successes)),

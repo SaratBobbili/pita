@@ -1,0 +1,264 @@
+srun -p gpu-research --cpus-per-task=8 --gres=gpu:a100 -J qhf --pty bash
+
+srun -p gpu-research --cpus-per-task=8 --gres=gpu:2 -J test --pty bash
+
+
+srun -p gpu-research --cpus-per-task=8 --gres=gpu:a100:1 -J 0-2K --pty bash
+
+python collect_training_data_pref.py --start_index 0 --end_index 2000 --is_first_round 1 --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct --classifier_model_id meta-llama/Llama-3.2-1B-Instruct --classifier_type V --inference_mode bernoulli --loss_type bce --use_bias 0 --data_path dataset/gsm8k_train.jsonl --train_eval_save_path dataset/gsm8k_train_eval.json --use_chat_template 1 --eta 0 --temperature 0.8 --top_p 0.9 --max_new_tokens 1024  --dtype bfloat16 --match_fn_type symbolic --output_dir collected_data/llama_3_8b_instruct_gsm8k/
+
+
+
+srun -p gpu-research --cpus-per-task=8 --gres=gpu:a100:1 -J dpo --pty bash
+python collect_training_data_pref.py --start_index 2000 --end_index 4000 --is_first_round 1 --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct --classifier_model_id meta-llama/Llama-3.2-1B-Instruct --classifier_type V --inference_mode bernoulli --loss_type bce --use_bias 0 --data_path dataset/gsm8k_train.jsonl --train_eval_save_path dataset/gsm8k_train_eval.json --use_chat_template 1 --eta 0 --temperature 0.8 --top_p 0.9 --max_new_tokens 1024  --dtype bfloat16 --match_fn_type symbolic --output_dir collected_data/llama_3_8b_instruct_gsm8k/
+
+
+srun -p gpu-research --cpus-per-task=8 --gres=gpu:a100:1 -J train_classifier --pty bash
+
+srun -p gpu-research --cpus-per-task=8 --gres=gpu:a100:1 -J train_class --cpus-per-task=8 -q olympus-research-gpu --pty python train_classifier.py --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct --classifier_model_id meta-llama/Llama-3.2-1B-Instruct \
+--original_problems_path dataset/gsm8k_train.jsonl --train_eval_save_path dataset/gsm8k_train_eval.json --init_mode reuse --inference_mode expectation \
+--loss_type bce --dataset_type gsm8k --data_paths collected_data/llama_3_8b_instruct_gsm8k/all_train_pref_data.jsonl --drop_no_variation 1 --eta 1 --output_dir checkpoints/llama_3_8b_instruct_gsm8k/ --num_epochs 5
+
+
+
+
+srun -p gpu-research --cpus-per-task=8 --gres=gpu:a100:1 -J eval --pty bash
+
+python train_classifier.py --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct --classifier_model_id meta-llama/Llama-3.2-1B-Instruct \ --original_problems_path dataset/gsm8k_train.jsonl --train_eval_save_path dataset/gsm8k_train_eval.json --init_mode reuse --inference_mode expectation \ --loss_type bce --dataset_type gsm8k --data_paths collected_data/llama_3_8b_instruct_gsm8k/all_train_pref_data.jsonl --drop_no_variation 1 --eta 1 --output_dir checkpoints/llama_3_8b_instruct_gsm8k/ --num_epochs 5
+
+
+
+
+srun -p gpu-research --cpus-per-task=8 --gres=gpu:a100:1 -J 0-1K -q olympus-research-gpu --pty python collect_training_data_pref.py --start_index 0 --end_index 1000 --is_first_round 1 --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct --classifier_model_id meta-llama/Llama-3.2-1B-Instruct --classifier_type V --inference_mode expectation --loss_type bce --use_bias 0 --data_path dataset/gsm8k_train.jsonl --train_eval_save_path dataset/gsm8k_train_eval.json --use_chat_template 1 --eta 1 --temperature 0.8 --top_p 0.9 --max_new_tokens 1024 --dtype bfloat16 --match_fn_type symbolic --output_dir collected_data/round2 --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/ckpt_22500_round1
+
+srun -p gpu-research --cpus-per-task=8 --gres=gpu:a100:1 -J pita-refactored -q olympus-research-gpu --pty bash
+srun -p gpu-research --cpus-per-task=8 --gres=gpu:a100:4 -J pita-70b -q olympus-research-gpu --pty bash
+
+
+ ~srun -p gpu-research --cpus-per-task=8 --gres=gpu:a100:1 -J igpo -q olympus-research-gpu --pty bash
+
+python collect_training_data_pref.py --start_index 1000 --end_index 2000 --is_first_round 0 --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct --classifier_model_id meta-llama/Llama-3.2-1B-Instruct --classifier_type V --inference_mode expectation --loss_type bce --use_bias 0 --data_path dataset/gsm8k_train.jsonl --train_eval_save_path dataset/gsm8k_train_eval.json --use_chat_template 1 --eta 1 --temperature 0.8 --top_p 0.9 --max_new_tokens 1024 --dtype bfloat16 --match_fn_type symbolic --output_dir collected_data/round1 --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/ckpt_22500_round1
+
+srun -p gpu-research --cpus-per-task=8 --gres=gpu:a100:1 -J 2-3K -q olympus-research-gpu --pty bash
+python collect_training_data_pref.py --start_index 2000 --end_index 3000 --is_first_round 0 --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct --classifier_model_id meta-llama/Llama-3.2-1B-Instruct --classifier_type V --inference_mode expectation --loss_type bce --use_bias 0 --data_path dataset/gsm8k_train.jsonl --train_eval_save_path dataset/gsm8k_train_eval.json --use_chat_template 1 --eta 1 --temperature 0.8 --top_p 0.9 --max_new_tokens 1024 --dtype bfloat16 --match_fn_type symbolic --output_dir collected_data/round2 --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/ckpt_22500_round1
+
+srun -p gpu-research --cpus-per-task=8 --gres=gpu:a100:1 -J star_graph_train -q olympus-research-gpu --pty bash
+srun -p gpu-research --cpus-per-task=8 --gres=gpu:a100:1 -J star_graph_eval -q olympus-research-gpu --pty bash
+python collect_training_data_pref.py --start_index 6000 --end_index -1 --is_first_round 0 --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct --classifier_model_id meta-llama/Llama-3.2-1B-Instruct --classifier_type V --inference_mode expectation --loss_type bce --use_bias 0 --data_path dataset/gsm8k_train.jsonl --train_eval_save_path dataset/gsm8k_train_eval.json --use_chat_template 1 --eta 1 --temperature 0.8 --top_p 0.9 --max_new_tokens 1024 --dtype bfloat16 --match_fn_type symbolic --output_dir collected_data/round2 --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/ckpt_22500_round1
+
+
+```bash
+python train_classifier.py --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct --classifier_model_id meta-llama/Llama-3.2-1B-Instruct \
+--original_problems_path dataset/gsm8k_train.jsonl --train_eval_save_path dataset/gsm8k_train_eval.json --init_mode warmstart --inference_mode expectation \
+--loss_type bce --dataset_type gsm8k --data_paths collected_data/llama_3_8b_instruct_gsm8k/all_train_pref_data.jsonl --drop_no_variation 1 --eta 1 --output_dir checkpoints/llama_3_8b_instruct_gsm8k/warmstart --num_epochs 5
+```
+
+
+Round2 Only simulation commands exectued.
+
+python combine_training_data.py --data_template_path collected_data/llama_3_8b_instruct_gsm8k/round2 --data_path dataset/gsm8k_train.jsonl --train_eval_save_path dataset/gsm8k_train_eval.json
+
+
+python train_classifier.py --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct --classifier_model_id meta-llama/Llama-3.2-1B-Instruct \
+--original_problems_path dataset/gsm8k_train.jsonl --train_eval_save_path dataset/gsm8k_train_eval.json --init_mode reuse --inference_mode expectation \
+--loss_type bce --dataset_type gsm8k --data_paths collected_data/llama_3_8b_instruct_gsm8k/all_train_pref_data_round1_round2.jsonl --drop_no_variation 1 --eta 1 \
+--output_dir checkpoints/llama_3_8b_instruct_gsm8k/round2 --num_epochs 5 --wandb_run_name 'round2' --wandb_project 'round2_classifier_training'
+
+
+ python eval_ckpt.py --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/ckpt_35000_round2/ --eta 1 --data_path dataset/gsm8k_test.jsonl --train_eval_save_path dataset/gsm8k_test_eval.json
+
+ python eval_ckpt2.py --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/ckpt_35000_round2/ --eta 1 --data_path dataset/gsm8k_test.jsonl --train_eval_save_path dataset/gsm8k_test_eval.json  --output_dir inference_stats/pita/
+
+ srun -p gpu-research --cpus-per-task=8 --gres=gpu:a100:1 -J igpo -q olympus-research-gpu --pty bash
+
+srun -p gpu-research --cpus-per-task=8 --gres=gpu:a100:1 -J gemma -q igpo --pty bash
+
+srun --partition long --cpus-per-task=8 --gres=gpu:1 -t 16:00:00 -J qsharp --pty bash
+
+python train_classifier_dpo2.py \
+  --batch_size 4 \
+  --gradient_accumulation_step 2 \
+  --ref_model_id meta-llama/Llama-3.2-1B-Instruct \
+  --train_eval_save_path dataset/gsm8k_train_eval.json \
+  --data_paths collected_data/llama_3_8b_instruct_gsm8k/all_train_pref_data_round1_round2.jsonl \
+  --eta 1 \
+  --output_dir checkpoints/llama_3_8b_instruct_gsm8k/dpo4 \
+  --num_epochs 1 \
+  --wandb_run_name 'dpo' \
+  --wandb_project 'dpo_training' \
+  --track 1
+
+
+python train_classifier_dpo.py \
+  --batch_size 4 \
+  --ref_model_id meta-llama/Llama-3.2-1B-Instruct \
+  --train_eval_save_path dataset/gsm8k_train_eval.json \
+  --data_paths collected_data/llama_3_8b_instruct_gsm8k/all_train_pref_data_round1_round2.jsonl \
+  --eta 1 \
+  --output_dir checkpoints/llama_3_8b_instruct_gsm8k/dpo4 \
+  --num_epochs 1 \
+  --wandb_run_name 'dpo' \
+  --wandb_project 'dpo_training' \
+  --track 1
+
+
+
+Phi Run2
+
+srun -p gpu-research --cpus-per-task=8 --gres=gpu:a100:1 -J 0-1K -q olympus-research-gpu --pty python collect_training_data_pref.py --start_index 0 --end_index 1000 --is_first_round 1 --ref_model_id microsoft/Phi-3-small-8k-instruct --classifier_model_id microsoft/Phi-3-mini-4k-instruct --classifier_type V --inference_mode expectation --loss_type bce --use_bias 0 --data_path dataset/gsm8k_train.jsonl --train_eval_save_path dataset/gsm8k_train_eval.json --use_chat_template 1 --eta 1 --temperature 0.8 --top_p 0.9 --max_new_tokens 1024 --dtype bfloat16 --match_fn_type symbolic --output_dir collected_data/round1
+
+
+
+python train_classifier.py --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct --classifier_model_id meta-llama/Llama-3.2-1B-Instruct \ --original_problems_path dataset/gsm8k_train.jsonl --train_eval_save_path dataset/gsm8k_train_eval.json --init_mode reuse --inference_mode expectation \ --loss_type bce --dataset_type gsm8k --data_paths collected_data/llama_3_8b_instruct_gsm8k/all_train_pref_data.jsonl --drop_no_variation 1 --eta 1 --output_dir checkpoints/llama_3_8b_instruct_gsm8k/ --num_epochs 5
+
+
+
+
+ python eval_ckpt_qwen.py --classifier_ckpt_path checkpoints/Qwen_1_5b_gsm8k/ckpt_0/ --eta 0 --data_path dataset/gsm8k_test.jsonl --train_eval_save_path dataset/gsm8k_test_eval.json
+
+
+
+
+ python train_classifier_mlp.py \
+  --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct \
+  --classifier_model_id meta-llama/Llama-3.2-1B-Instruct \
+  --original_problems_path dataset/gsm8k_train.jsonl \
+  --train_eval_save_path dataset/gsm8k_train_eval.json \
+  --init_mode reuse \
+  --inference_mode expectation \
+  --loss_type bce \
+  --dataset_type gsm8k \
+  --data_paths collected_data/llama_3_8b_instruct_gsm8k/all_train_pref_data.jsonl \
+  --drop_no_variation 1 \
+  --eta 1 \
+  --output_dir checkpoints/llama_3_8b_instruct_gsm8k/training_costs/pita_mlp_5 \
+  --num_epochs 10
+
+
+
+  python aggregate_efficiency_stats.py --efficiency_log_dir checkpoints/llama_3_8b_instruct_gsm8k/training_costs/q_sharp/efficiency
+
+
+
+
+   python eval_ckpt.py --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/training_costs/pita_mlp_5/ckpt_35000 --eta 4 --data_path dataset/gsm8k_test.jsonl --train_eval_save_path dataset/gsm8k_test_eval.json
+
+
+   python eval_ckpt_hhrlhf.py --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/training_costs/cd/ckpt_5000 --eta 1 --data_path Jeremy/anthropic_hh_test.json
+   
+   srun --partition long --cpus-per-task=8 --gres=gpu:1 -t 16:00:00 -J pita_s4 --pty bash
+    srun --partition long --cpus-per-task=8 --gres=gpu:1 -t 16:00:00 -J pita_s8 --pty bash
+srun --partition long --cpus-per-task=8 --gres=gpu:1 -t 16:00:00 -J alpa_5K --pty bash
+srun --partition long --cpus-per-task=8 --gres=gpu:1 -t 16:00:00 -J alpa_15K --pty bash
+srun --partition long --cpus-per-task=8 --gres=gpu:1 -t 16:00:00 -J alpa_25K --pty bash
+
+srun --partition medium --cpus-per-task=8 --gres=gpu:1 -t 8:00:00 -J echo_test-med --pty bash
+
+srun --partition short--cpus-per-task=8 --gres=gpu:1 -t 8:00:00 -J short_echo --pty bash
+
+
+
+python train_classifier_sample.py \
+  --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct \
+  --classifier_model_id meta-llama/Llama-3.2-1B-Instruct \
+  --original_problems_path dataset/gsm8k_train.jsonl \
+  --train_eval_save_path dataset/gsm8k_train_eval.json \
+  --init_mode reuse \
+  --inference_mode expectation \
+  --loss_type bce \
+  --dataset_type gsm8k \
+  --data_paths collected_data/llama_3_8b_instruct_gsm8k/all_train_pref_data.jsonl \
+  --num_rollouts_per_example 12 \
+  --drop_no_variation 1 \
+  --eta 1 \
+  --output_dir checkpoints/llama_3_8b_instruct_gsm8k/training_costs/pita_s12 \
+  --num_epochs 10
+
+
+  python eval_ckpt.py --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/training_costs/cd/ckpt_10000 --cd_baseline 1 --inference_mode bernoulli --eta 1 --data_path dataset/gsm8k_test.jsonl --train_eval_save_path dataset/gsm8k_test_eval.json
+
+
+
+
+  python eval_ckpt.py --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/training_costs/pita_s4/ckpt_20000   --eta 1 --data_path dataset/gsm8k_test.jsonl --train_eval_save_path dataset/gsm8k_test_eval.json
+
+    python eval_ckpt.py --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/training_costs/pita_s8/ckpt_25000   --eta 1 --data_path dataset/gsm8k_test.jsonl --train_eval_save_path dataset/gsm8k_test_eval.json
+
+
+
+    python aggregate_efficiency_stats.py --efficiency_log_dir checkpoints/llama_3_8b_instruct_gsm8k/training_costs/pita/ckpt_10000/efficiency
+    python aggregate_efficiency_stats.py --efficiency_log_dir checkpoints/llama_3_8b_instruct_gsm8k/training_costs/cd/ckpt_10000/efficiency
+    python aggregate_efficiency_stats.py --efficiency_log_dir checkpoints/llama_3_8b_instruct_gsm8k/training_costs/q_sharp/ckpt_10000/efficiency
+
+
+
+
+  python train_classifier-Jer-alpaca.py \
+  --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct \
+  --classifier_model_id meta-llama/Llama-3.2-1B-Instruct \
+  --init_mode reuse \
+  --inference_mode expectation \
+  --loss_type bce \
+  --dataset_type alpaca_eval \
+  --data_path collected_data/alpaca/alpaca_train_pref_data.jsonl \
+  --train_eval_save_path collected_data/alpaca/alpaca_noisy_multi_preference_train_eval.json \
+  --drop_no_variation 1 \
+  --eta 1 \
+  --output_dir checkpoints/alpaca/pair_loss \
+  --lr 5e-6 \
+  --weight_decay 0.05 \
+  --pairwise_margin_reg 1e-3 \
+  --eval_freq 200 \
+  --early_stop_patience -1 \
+  --early_stop_min_delta 1e-4 \
+  --num_epochs 6 \
+  --wandb_run_name 'alpaca_pair_loss' \
+  --wandb_project 'alpaca_classifier_training' \
+  --track 1
+
+
+
+  python eval_ckpt.py --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/training_costs/pita_s12/ckpt_35000 --eta 1.0 --data_path dataset/gsm8k_test.jsonl --train_eval_save_path dataset/gsm8k_test_eval.json
+
+
+python eval_ckpt.py --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/training_costs/pita_s4/ckpt_20000   --eta 1 --data_path dataset/gsm8k_test.jsonl --train_eval_save_path dataset/gsm8k_test_eval.json
+
+
+python eval_ckpt.py --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/training_costs/pita_s8/ckpt_25000   --eta 6.0 --data_path dataset/gsm8k_test.jsonl --train_eval_save_path dataset/gsm8k_test_eval.json
+
+
+python eval_ckpt_hhrlhf.py --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/training_costs/cd/ckpt_5000 --eval_ratio 0.1 --eta 0 --data_path Jeremy/anthropic_hh_test.json
+
+
+
+
+
+python train_classifier-Jer-alpaca.py --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct --classifier_model_id meta-llama/Llama-3.2-1B-Instruct --init_mode reuse --inference_mode expectation --loss_type bce --dataset_type alpaca_eval --data_path collected_data/alpaca/alpaca_train_pref_data.jsonl --train_eval_save_path collected_data/alpaca/alpaca_noisy_multi_preference_train_eval.json --drop_no_variation 1 --eta 1 --output_dir checkpoints/alpaca/pair_loss --num_epochs 100 --wandb_run_name 'alpaca_pair_loss' --wandb_project 'alpaca_classifier_training' --track 1
+
+
+
+python train_classifier_bounded.py \
+  --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct \
+  --classifier_model_id meta-llama/Llama-3.2-1B-Instruct \
+  --original_problems_path dataset/gsm8k_train.jsonl \
+  --train_eval_save_path dataset/gsm8k_train_eval.json \
+  --init_mode reuse \
+  --inference_mode expectation \
+  --loss_type bce \
+  --dataset_type gsm8k \
+  --data_paths collected_data/llama_3_8b_instruct_gsm8k/all_train_pref_data.jsonl \
+  --drop_no_variation 1 \
+  --eta 1 \
+  --output_dir checkpoints/llama_3_8b_instruct_gsm8k/training_costs/pita_bounded \
+  --num_epochs 10
+
+
+
+  python eval_ckpt_bounded.py --classifier_ckpt_path checkpoints/llama_3_8b_instruct_gsm8k/training_costs/pita_bounded/ckpt_5000   --eta 1.0 --data_path dataset/gsm8k_test.jsonl --train_eval_save_path dataset/gsm8k_test_eval.json
+
+
+    python eval_ckpt_qwen.py --classifier_type Q --ref_model_id Qwen/Qwen2.5-7B-Instruct --classifier_model_id Qwen/Qwen2.5-1B-Instruct   --eta 0 --data_path dataset/gsm8k_test.jsonl --train_eval_save_path dataset/gsm8k_test_eval.json
+
+
+python eval_ckpt_qwen.py --classifier_type Q --ref_model_id Qwen/Qwen2.5-7B --classifier_model_id Qwen/Qwen2.5-1.5B   --eta 0 --data_path dataset/gsm8k_test.jsonl --train_eval_save_path dataset/gsm8k_test_eval.json --classifier_ckpt_path checkpoints/Qwen2.5-7B --temperature 1.0 --top_p 0.95
+

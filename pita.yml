@@ -1,4 +1,4 @@
-name: pita
+name: qsharp
 channels:
   - defaults
   - https://repo.anaconda.com/pkgs/main

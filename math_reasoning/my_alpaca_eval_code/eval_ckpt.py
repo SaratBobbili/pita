@@ -1,25 +1,18 @@
 import argparse
 import json
 import os
-import sys
 from tqdm import tqdm
 import glob
 import math
 import numpy as np
 import torch
-import torch.nn.functional as F
-from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM, set_seed
+from transformers import AutoTokenizer, AutoModelForCausalLM, set_seed
 import copy
 import datasets
-
-_classifier_dir = os.environ.get("PITA_CLASSIFIER_DIR")
-if _classifier_dir:
-    sys.path.insert(0, _classifier_dir)
-
 from classifier import CustomLlamaForSequenceClassification, CustomValueGuidedLogitProcessor
-from utils_hhrlhf import read_jsonl, tokenize_with_chat_template, \
-    perplexity_with_classifier_guidance, write_jsonl, get_parent_directory, resolve_dict_value, write_json_array
-import utils_hhrlhf
+from utils import read_jsonl, tokenize_with_chat_template, generate_with_classifier_guidance, write_jsonl, \
+    get_parent_directory, resolve_dict_value, write_json_array
+import utils
 
 parser = argparse.ArgumentParser(description='')
 parser.add_argument('--ref_model_id', default=None, type=str,
@@ -35,7 +28,8 @@ parser.add_argument('--use_bias', default=None, type=int,
                     help='whether to use bias for the classification layer, llama 3 does not have bias')
 parser.add_argument('--data_path', default='tatsu-lab/alpaca_eval', type=str, help='Data to generate outputs for (default is the standard Alpaca-Eval dataset)')
 parser.add_argument('--data_split', default="alpaca_eval", type=str, help='Data split to use (default is given for the tatsu-lab/alpaca_eval dataset)')
-parser.add_argument('--batch_size', default=200, type=int, help='batch size')
+parser.add_argument('--batch_size', default=16, type=int, help='batch size')
+parser.add_argument('--kl_batch_size', default=2, type=int, help='batch size for KL computation')
 parser.add_argument('--num_samples', default=1, type=int, help='number of samples per problem')
 parser.add_argument('--cd_baseline', default=0, type=int, help='whether to use CD baseline')
 parser.add_argument('--use_chat_template', default=None, type=int, help='whether to use chat template for generation')
@@ -60,18 +54,6 @@ parser.add_argument('--V_max', default=None, type=float, help='V_max for histogr
 parser.add_argument('--shift_reward', default=None, type=float, help='shift reward by value (subtraction)')
 parser.add_argument('--scale_reward', default=None, type=float, help='scale reward by value (multiplication)')
 parser.add_argument('--quick_test', action='store_true', help='whether to run a quick test with 10 samples for debugging purposes')
-parser.add_argument('--eval_ratio', default=1.0, type=float,
-                    help='fraction of eval examples to run on; 1.0 uses all examples')
-parser.add_argument('--prompt_key', default='instruction', type=str,
-                    help='dataset field to use as the prompt; if data is a JSON object, object keys are treated as prompts')
-parser.add_argument('--response_1_key', default='output_1', type=str,
-                    help='dataset field to use as the first candidate response')
-parser.add_argument('--response_2_key', default='output_2', type=str,
-                    help='dataset field to use as the second candidate response')
-parser.add_argument('--preference_key', default='preference', type=str,
-                    help='dataset field with preferred response label; 1 means output_1 preferred, 2 means output_2 preferred')
-parser.add_argument('--ppl_source', default='guided', choices=['guided', 'reference'], type=str,
-                    help='which distribution to use for perplexity: guided uses classifier-guided logits, reference uses plain ref-model logits')
 
 args = parser.parse_args()
 args_dict = vars(args)
@@ -92,6 +74,7 @@ use_bias = bool(resolve_dict_value(args_dict, training_args_dict, 'use_bias'))
 data_path = args.data_path
 train_eval_save_path = resolve_dict_value(args_dict, training_args_dict, 'train_eval_save_path')
 batch_size = args.batch_size
+kl_batch_size = args.kl_batch_size
 num_samples = args.num_samples
 cd_baseline = args.cd_baseline
 use_chat_template = resolve_dict_value(args_dict, training_args_dict, 'use_chat_template')
@@ -112,11 +95,6 @@ V_min = resolve_dict_value(args_dict, training_args_dict, 'V_min')
 V_max = resolve_dict_value(args_dict, training_args_dict, 'V_max')
 shift_reward = resolve_dict_value(args_dict, training_args_dict, 'shift_reward')
 scale_reward = resolve_dict_value(args_dict, training_args_dict, 'scale_reward')
-prompt_key = args.prompt_key
-response_1_key = args.response_1_key
-response_2_key = args.response_2_key
-preference_key = args.preference_key
-ppl_source = args.ppl_source
 
 if output_dir is None:
     output_dir = classifier_ckpt_path
@@ -138,7 +116,6 @@ tokenizer = AutoTokenizer.from_pretrained(ref_model_id)
 classifier_tokenizer = AutoTokenizer.from_pretrained(classifier_model_id)
 assert len(tokenizer) == len(classifier_tokenizer), "tokenizer vocab size mismatch"
 vocab_size = len(tokenizer)
-print("tokenizer vocab_size (num_labels for Q head):", vocab_size)
 if tokenizer.pad_token is None:
     assert 'Llama-3' in ref_model_id
     tokenizer.pad_token = tokenizer.added_tokens_decoder[128002].content  # reserved special token 0
@@ -158,36 +135,11 @@ model_loading_kwargs = {}
 if dtype == 'bfloat16':
     model_loading_kwargs['torch_dtype'] = torch.bfloat16
 ref_model = AutoModelForCausalLM.from_pretrained(ref_model_id, **model_loading_kwargs, device_map=device)
-classifier_config = AutoConfig.from_pretrained(classifier_ckpt_path)
-checkpoint_vocab_size = getattr(classifier_config, "vocab_size", None)
-if classifier_type == "Q":
-    # Q-head width must match the saved score matrix width in the checkpoint.
-    target_num_labels = checkpoint_vocab_size
-    if target_num_labels is None:
-        raise ValueError("classifier checkpoint config is missing vocab_size; cannot size Q-head.")
-    if vocab_size != target_num_labels:
-        print("Tokenizer vocab (%d) differs from checkpoint vocab (%d); using checkpoint vocab for Q-head." % (
-            vocab_size, target_num_labels
-        ))
-else:
-    target_num_labels = 1
-
-# For HF configs, num_labels is derived from id2label length; force both consistently.
-classifier_config.id2label = {i: f"LABEL_{i}" for i in range(target_num_labels)}
-classifier_config.label2id = {v: k for k, v in classifier_config.id2label.items()}
-print("classifier num_labels after config fix:", classifier_config.num_labels)
-classifier_model = CustomLlamaForSequenceClassification.from_pretrained(
-    classifier_ckpt_path,
-    config=classifier_config,
-    **model_loading_kwargs,
-    classifier_type=classifier_type,
-    loss_type=loss_type,
-    use_bias=use_bias,
-    device_map=device,
-    num_atoms=num_atoms,
-    V_min=V_min,
-    V_max=V_max,
-)
+classifier_model = CustomLlamaForSequenceClassification.from_pretrained(classifier_ckpt_path, **model_loading_kwargs,
+                                                                        num_labels=vocab_size, classifier_type=classifier_type,
+                                                                        loss_type=loss_type, use_bias=use_bias,
+                                                                        device_map=device, num_atoms=num_atoms,
+                                                                        V_min=V_min, V_max=V_max)
 
 ref_model.eval()
 classifier_model.eval()
@@ -202,78 +154,14 @@ else:
                                                       inference_mode='disabled', top_k=top_k, cd_baseline=cd_baseline,
                                                       use_cache=True)
 
-
-def perplexity_with_reference_model(ref_model, inputs, response_inputs):
-    """
-    Teacher-forced perplexity of continuation tokens under plain reference-model logits.
-    """
-    assert inputs["input_ids"].shape[0] == response_inputs["input_ids"].shape[0]
-    device = inputs["input_ids"].device
-    response_ids = response_inputs["input_ids"]
-    response_mask = response_inputs.get("attention_mask")
-    if response_mask is None:
-        response_mask = torch.ones_like(response_ids)
-    batch_size = inputs["input_ids"].shape[0]
-    ppls = []
-    for b in tqdm(range(batch_size), desc="ref_ppl"):
-        prompt_row = inputs["input_ids"][b: b + 1]
-        prompt_attn = inputs["attention_mask"][b: b + 1]
-        rm = response_mask[b].bool()
-        resp_real = response_ids[b][rm]
-        rlen = int(resp_real.numel())
-        if rlen == 0:
-            ppls.append(torch.tensor(float("nan"), device=device))
-            continue
-        total_nll = torch.zeros((), device=device, dtype=torch.float32)
-        for t in range(rlen):
-            if t == 0:
-                prefix_ids = prompt_row
-                prefix_attn = prompt_attn
-            else:
-                gen_piece = resp_real[:t].unsqueeze(0)
-                prefix_ids = torch.cat([prompt_row, gen_piece], dim=1)
-                gen_attn = torch.ones(1, t, device=device, dtype=prompt_attn.dtype)
-                prefix_attn = torch.cat([prompt_attn, gen_attn], dim=1)
-            with torch.no_grad():
-                out = ref_model(input_ids=prefix_ids, attention_mask=prefix_attn)
-            ref_logits = out.logits[:, -1, :]
-            tok = resp_real[t]
-            log_prob = F.log_softmax(ref_logits.float(), dim=-1)[0, tok]
-            total_nll = total_nll - log_prob
-        ppls.append(torch.exp(total_nll / rlen))
-    return torch.stack(ppls)
-
-if os.path.isfile(args.data_path):
-    with open(args.data_path, 'r') as f:
-        raw_data = json.load(f)
-    if isinstance(raw_data, dict):
-        inference_eval_examples = []
-        for prompt_text, value in raw_data.items():
-            current_example = copy.deepcopy(value)
-            current_example[prompt_key] = prompt_text
-            inference_eval_examples.append(current_example)
-    elif isinstance(raw_data, list):
-        inference_eval_examples = raw_data
-    else:
-        raise ValueError("Unsupported JSON format: expected dict or list.")
-else:
-    inference_eval_examples = datasets.load_dataset(args.data_path, args.data_split)["eval"].to_list()
+inference_eval_examples = datasets.load_dataset(args.data_path, args.data_split)["eval"]
 if args.quick_test:
-    inference_eval_examples = inference_eval_examples[:10]
-if args.eval_ratio <= 0 or args.eval_ratio > 1:
-    raise ValueError(f"eval_ratio must be in (0, 1], got {args.eval_ratio}")
-if args.eval_ratio < 1:
-    target_eval_size = max(1, int(math.ceil(len(inference_eval_examples) * args.eval_ratio)))
-    sampled_indices = np.random.permutation(len(inference_eval_examples))[:target_eval_size]
-    sampled_indices = sorted(sampled_indices.tolist())
-    inference_eval_examples = [inference_eval_examples[i] for i in sampled_indices]
-    print(f"Using eval_ratio={args.eval_ratio}; evaluating {len(inference_eval_examples)} examples")
-assert len(inference_eval_examples) > 0, "evaluation split is empty"
-assert prompt_key in inference_eval_examples[0], f"prompt_key '{prompt_key}' not found in dataset example"
-assert response_1_key in inference_eval_examples[0], f"response_1_key '{response_1_key}' not found in dataset example"
-assert response_2_key in inference_eval_examples[0], f"response_2_key '{response_2_key}' not found in dataset example"
-assert preference_key in inference_eval_examples[0], f"preference_key '{preference_key}' not found in dataset example"
-example_to_ID_map = {example[prompt_key]: indx for indx, example in enumerate(inference_eval_examples)}
+    inference_eval_examples = inference_eval_examples.select(range(10))
+# Remove the existing output column if it exists to avoid confusion with new outputs
+inference_eval_examples.remove_columns("output")
+# Convert to list of dicts since that matches the logic used later in the code
+inference_eval_examples = inference_eval_examples.to_list()
+example_to_ID_map = {example['instruction']: indx for indx, example in enumerate(inference_eval_examples)}
 
 for i in range(num_samples):
     repeat_index = i
@@ -298,58 +186,47 @@ for i in range(num_samples):
         batch_start_index = j * batch_size
         batch_end_index = min((j + 1) * batch_size, len(data_to_infer))
         batch_indices = list(range(batch_start_index, batch_end_index))
-        current_prompts = [data_to_infer[k][prompt_key] for k in range(batch_start_index, batch_end_index)]
+        current_prompts = [data_to_infer[k]['instruction'] for k in range(batch_start_index, batch_end_index)]
         # I am using the same chat template as in math_reasoning, since it is very generic
         current_inputs, current_formatted_prompts = tokenize_with_chat_template(tokenizer, current_prompts,
                                                                                 use_chat_template, device)
-        current_response_1 = [str(data_to_infer[k][response_1_key]) for k in range(batch_start_index, batch_end_index)]
-        current_response_2 = [str(data_to_infer[k][response_2_key]) for k in range(batch_start_index, batch_end_index)]
-        response_1_inputs_for_ppl = tokenizer(
-            current_response_1,
-            padding=True,
-            add_special_tokens=False,
-            return_tensors="pt",
-        ).to(device)
-        response_2_inputs_for_ppl = tokenizer(
-            current_response_2,
-            padding=True,
-            add_special_tokens=False,
-            return_tensors="pt",
-        ).to(device)
-        if ppl_source == 'guided':
-            ppl_output_1 = perplexity_with_classifier_guidance(
-                ref_model,
-                tokenizer,
-                logit_processor,
-                current_inputs,
-                response_inputs=response_1_inputs_for_ppl,
-                eta=eta,
-            )
-            ppl_output_2 = perplexity_with_classifier_guidance(
-                ref_model,
-                tokenizer,
-                logit_processor,
-                current_inputs,
-                response_inputs=response_2_inputs_for_ppl,
-                eta=eta,
-            )
-        else:
-            ppl_output_1 = perplexity_with_reference_model(
-                ref_model,
-                current_inputs,
-                response_1_inputs_for_ppl,
-            )
-            ppl_output_2 = perplexity_with_reference_model(
-                ref_model,
-                current_inputs,
-                response_2_inputs_for_ppl,
-            )
-        predicted_preference = torch.where(ppl_output_1 <= ppl_output_2, 1, 2)
-        true_preference = torch.tensor(
-            [int(data_to_infer[k][preference_key]) for k in range(batch_start_index, batch_end_index)],
-            device=predicted_preference.device,
-        )
-        is_success = predicted_preference.eq(true_preference)
+        generate_kwargs['output_scores'] = True
+        generate_kwargs['return_dict_in_generate'] = True
+        current_outputs = generate_with_classifier_guidance(ref_model, tokenizer, logit_processor, current_inputs, generate_kwargs, True, False, eta)
+        current_outputs_id = current_outputs['sequences']
+        current_outputs_text = tokenizer.batch_decode(current_outputs_id, skip_special_tokens=True)
+        current_outputs['scores'] = tuple([e.cpu() for e in current_outputs['scores']])  # prevent OOM
+        aligned_model_scores = torch.stack(current_outputs['scores'], dim=1).float()
+        del current_outputs
+        torch.cuda.empty_cache()
+
+        # also evaluate the KL divergence w.r.t. ref model
+        token_kl_list = []
+        for k in range(0, len(batch_indices), kl_batch_size):
+            # compute kl in batches since kl computation is memory intensive
+            # we want KL(pi_aligned || pi_ref)
+            output_attention_mask = (current_outputs_id[k:k + kl_batch_size] != tokenizer.pad_token_id).long()
+            concat_input_ids = torch.cat([current_inputs['input_ids'][k:k + kl_batch_size], current_outputs_id[k:k + kl_batch_size]], dim=1)
+            concat_attention_mask = torch.cat([current_inputs['attention_mask'][k:k + kl_batch_size], output_attention_mask], dim=1)
+            concat_inputs = {'input_ids': concat_input_ids, 'attention_mask': concat_attention_mask}
+            ref_model_output = ref_model(**concat_inputs)
+            ref_model_output_logits = ref_model_output.logits[:, current_inputs['input_ids'].shape[1] - 1:-1]
+            ref_model_output_logits = ref_model_output_logits.float() / temperature
+            del ref_model_output
+            torch.cuda.empty_cache()
+
+            cur_token_kl = utils.kl_divergence(aligned_model_scores[k:k+kl_batch_size].to(ref_model_output_logits.device), ref_model_output_logits)
+            cur_token_kl = cur_token_kl * output_attention_mask
+            token_kl_list.append(cur_token_kl)
+            torch.cuda.empty_cache()
+
+            del ref_model_output_logits
+            torch.cuda.empty_cache()
+
+        token_kl = torch.cat(token_kl_list, dim=0)
+        traj_kl = token_kl.sum(dim=1)
+        del aligned_model_scores
+        torch.cuda.empty_cache()
 
         # save the results
         for k in range(len(batch_indices)):
@@ -359,60 +236,41 @@ for i in range(num_samples):
             with open(current_output_path, 'w') as f:
                 json.dump({
                     'input_ids': current_inputs['input_ids'][k].cpu().tolist(),
-                    'ppl_source': ppl_source,
-                    'ppl_output_1': float(ppl_output_1[k].item()),
-                    'ppl_output_2': float(ppl_output_2[k].item()),
-                    'predicted_preference': int(predicted_preference[k].item()),
-                    'true_preference': int(true_preference[k].item()),
-                    'is_success': int(is_success[k].item()),
+                    'output_ids': current_outputs_id[k].cpu().tolist(),
+                    'prediction': current_outputs_text[k],
+                    'token_kl': token_kl[k].cpu().tolist(),
+                    'traj_kl': traj_kl[k].item(),
                 }, f)
 
 print('done inference, now combine results')
-
-# TODO: As part of this, create the final model_outputs.json file which can be given to alpaca_eval
-# This should retain only the dataset, instruction, and output columns (with the generator column being added)
 
 for i in range(len(inference_eval_examples)):
     for j in range(num_samples):
         current_output_path = os.path.join(individual_eval_inference_output_dir, f'{i}_r{j}.json')
         assert os.path.exists(current_output_path), f"expect {current_output_path} to exist"
         if j == 0:
-            inference_eval_examples[i]['ppl_source'] = []
-            inference_eval_examples[i]['ppl_output_1'] = []
-            inference_eval_examples[i]['ppl_output_2'] = []
-            inference_eval_examples[i]['predicted_preference'] = []
-            inference_eval_examples[i]['is_success'] = []
+            inference_eval_examples[i]['token_kl'] = []
+            inference_eval_examples[i]['traj_kl'] = []
+            inference_eval_examples[i]['output'] = []
 
         with open(current_output_path, 'r') as f:
             current_prediction_data = json.load(f)
-        inference_eval_examples[i]['ppl_source'].append(current_prediction_data['ppl_source'])
-        inference_eval_examples[i]['ppl_output_1'].append(current_prediction_data['ppl_output_1'])
-        inference_eval_examples[i]['ppl_output_2'].append(current_prediction_data['ppl_output_2'])
-        inference_eval_examples[i]['predicted_preference'].append(current_prediction_data['predicted_preference'])
-        inference_eval_examples[i]['is_success'].append(current_prediction_data['is_success'])
+        inference_eval_examples[i]['token_kl'].append(current_prediction_data['token_kl'])
+        inference_eval_examples[i]['traj_kl'].append(current_prediction_data['traj_kl'])
+        inference_eval_examples[i]['output'] = current_prediction_data['prediction']
 
 print('done combining results, now saving')
 
 # Save this file just like in math_reasoning so the KL can be computed
 write_jsonl(inference_eval_examples, os.path.join(output_dir, 'inference_eval_results_{3}_eta_{0}_top_k_{1}_temp_{2}.jsonl'.format(eta, top_k, temperature, args.seed)))
 
-all_successes = []
-per_repeat_win_rate = []
-for j in range(num_samples):
-    current_repeat_successes = [inference_eval_examples[i]['is_success'][j] for i in range(len(inference_eval_examples))]
-    current_repeat_win_rate = float(np.mean(current_repeat_successes))
-    per_repeat_win_rate.append(current_repeat_win_rate)
-    all_successes.extend(current_repeat_successes)
-
-reward_stats = {
-    'num_examples': len(inference_eval_examples),
-    'num_samples': num_samples,
-    'ppl_source': ppl_source,
-    'total_comparisons': len(all_successes),
-    'wins': int(np.sum(all_successes)),
-    'win_rate': float(np.mean(all_successes)),
-    'per_repeat_win_rate': per_repeat_win_rate,
-}
-with open(os.path.join(output_dir, 'reward_stats_{3}_eta_{0}_top_k_{1}_temp_{2}.json'.format(eta, top_k, temperature, args.seed)), 'w') as f:
-    json.dump(reward_stats, f, indent=2)
-
+# Save model_outputs.jsonl
+model_outputs = []
+for i in range(len(inference_eval_examples)):
+    model_outputs.append({
+        'dataset': inference_eval_examples[i]['dataset'],
+        'instruction': inference_eval_examples[i]['instruction'],
+        'output': inference_eval_examples[i]['output'],
+        'generator': args.classifier_ckpt_path.strip('/').split('/')[-1]
+    })
+write_json_array(model_outputs, os.path.join(output_dir, 'model_outputs.json'))

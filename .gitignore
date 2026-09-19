@@ -4,3 +4,37 @@ math_reasoning/collected_data
 *.arrow
 math_reasoning/recipes/DPO/data/
 math_reasoning/recipes/PPO_RLHF/data/
+
+# ---- Large artifacts: kept on scratch, never in git ----
+
+# Reference checkouts that carry their own .git
+/SPPO/
+/verl-tool-lens/
+
+__pycache__/
+*.zip
+
+# Model weights and tokenizer blobs inside checkpoint dirs
+*.safetensors
+*.bin
+*.pt
+*.pth
+**/ckpt_*/config.json
+**/ckpt_*/tokenizer.json
+**/ckpt_*/tokenizer_config.json
+**/ckpt_*/special_tokens_map.json
+math_reasoning/qsharp_hf/round2_ckpt/
+
+# Per-example inference shards; the aggregated metrics next to them are committed
+individual_eval_inference_*/
+
+# Raw generation dumps (38-77 MB each)
+inference_eval_results_*.jsonl
+
+# Generated / downloaded datasets
+math_reasoning/hh_rlhf_train_pref_data.jsonl
+math_reasoning/anthropic_hh_train_eval.json
+math_reasoning/anthropic_hh_test_eval.json
+math_reasoning/Jeremy/anthropic_hh_test.json
+math_reasoning/dataset/alpaca_noisy_multi_preference_train_eval.json
+math_reasoning/inference_results/
