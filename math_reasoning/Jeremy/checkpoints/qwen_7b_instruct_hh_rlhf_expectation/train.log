@@ -1,0 +1,154 @@
+dgx062
+dgx062dgx062
+
+dgx062
+dgx062
+dgx062
+dgx062
+dgx062
+tokenizer padding side: left
+tokenizer padding side: left
+tokenizer padding side: left
+tokenizer padding side: left
+tokenizer padding side: left
+tokenizer padding side: left
+tokenizer padding side: left
+tokenizer padding side: left
+after capping: train problems=93929, eval problems=0
+after capping: train problems=93929, eval problems=0
+after capping: train problems=93929, eval problems=0
+after capping: train problems=93929, eval problems=0
+after capping: train problems=93929, eval problems=0
+after capping: train problems=93929, eval problems=0
+after capping: train problems=93929, eval problems=0
+after capping: train problems=93929, eval problems=0
+total number of training problems 187858
+total number of eval problems 0
+Creating classifier data...
+total number of training problems 187858
+total number of eval problems 0
+Creating classifier data...
+total number of training problems 187858
+total number of eval problems 0
+Creating classifier data...
+total number of training problems 187858
+total number of eval problems 0
+Creating classifier data...
+total number of training problems 187858
+total number of eval problems 0
+Creating classifier data...
+total number of training problems 187858
+total number of eval problems 0
+Creating classifier data...
+total number of training problems 187858
+total number of eval problems 0
+Creating classifier data...
+total number of training problems 187858
+total number of eval problems 0
+Creating classifier data...
+id_eval indices sum 9313989
+total number of training samples 169072
+total number of id eval samples 1000
+Finished creating vanilla dataloader
+id_eval indices sum 9313989
+total number of training samples 169072
+total number of id eval samples 1000
+Finished creating vanilla dataloader
+id_eval indices sum 9313989
+total number of training samples 169072
+total number of id eval samples 1000
+Finished creating vanilla dataloader
+id_eval indices sum 9313989
+total number of training samples 169072
+total number of id eval samples 1000
+Finished creating vanilla dataloader
+Creating classifier of type  Q
+Creating classifier of type  Q
+Creating classifier of type  Q
+Creating classifier of type  Q
+id_eval indices sum 9313989
+total number of training samples 169072
+total number of id eval samples 1000
+Finished creating vanilla dataloader
+id_eval indices sum 9313989
+total number of training samples 169072
+total number of id eval samples 1000
+Finished creating vanilla dataloader
+id_eval indices sum 9313989
+total number of training samples 169072
+total number of id eval samples 1000
+Finished creating vanilla dataloader
+Creating classifier of type  Q
+id_eval indices sum 9313989
+total number of training samples 169072
+total number of id eval samples 1000
+Finished creating vanilla dataloader
+Creating classifier of type  Q
+Creating classifier of type  Q
+Creating classifier of type  Q
+Loaded classifier model
+Loaded classifier model
+Loaded classifier model
+Loaded classifier model
+Loaded classifier model
+Loaded classifier model
+Loaded classifier model
+Loaded classifier model
+before loading score weight mean 2.644956111907959e-07
+before loading score weight mean 2.644956111907959e-07
+before loading score weight mean 2.644956111907959e-07
+before loading score weight mean 2.644956111907959e-07
+before loading score weight mean 2.644956111907959e-07
+before loading score weight mean 2.644956111907959e-07
+original lm_head weight mean -4.029273986816406e-05
+original lm_head weight mean -4.029273986816406e-05
+after loading score weight mean -4.029273986816406e-05
+before loading score weight mean 2.644956111907959e-07
+after loading score weight mean -4.029273986816406e-05
+original lm_head weight mean -4.029273986816406e-05
+after loading score weight mean -4.029273986816406e-05
+original lm_head weight mean -4.029273986816406e-05
+original lm_head weight mean -4.029273986816406e-05
+after loading score weight mean -4.029273986816406e-05
+after loading score weight mean -4.029273986816406e-05
+original lm_head weight mean -4.029273986816406e-05
+after loading score weight mean -4.029273986816406e-05
+original lm_head weight mean -4.029273986816406e-05
+after loading score weight mean -4.029273986816406e-05
+before loading score weight mean 2.644956111907959e-07
+original lm_head weight mean -4.029273986816406e-05
+after loading score weight mean -4.029273986816406e-05
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_0.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_2000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_4000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_6000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_8000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_10000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_12000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_14000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_16000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_18000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_20000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_22000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_24000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_26000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_28000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_30000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_32000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_34000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_36000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_38000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_40000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_42000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_44000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_46000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_48000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_50000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_52000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_54000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_56000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_58000.
+Model saved to checkpoints/qwen_7b_instruct_hh_rlhf_expectation/ckpt_60000.
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33mexpectation_hh_rlhf[0m at: [34mhttps://wandb.ai/jcarleton-texas-a-m-university/PITA/runs/7ybhaoyh[0m
+[1;34mwandb[0m: Find logs at: [1;35m../../../../custom/wandb/wandb/run-20260430_215125-7ybhaoyh/logs[0m

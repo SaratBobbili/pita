@@ -1,0 +1,12 @@
+{
+  "script": "eval_ckpt.py",
+  "num_ref_params": 8030261248,
+  "num_value_params": 1235816448,
+  "ref_model_id": "meta-llama/Meta-Llama-3-8B-Instruct",
+  "classifier_ckpt_path": "checkpoints/llama_3_8b_instruct_gsm8k/training_costs/q_sharp/ckpt_10000",
+  "eta": 1.0,
+  "top_k": 20,
+  "temperature": 0.8,
+  "max_new_tokens": 1024,
+  "start_time_unix": 1774880487.0062242
+}

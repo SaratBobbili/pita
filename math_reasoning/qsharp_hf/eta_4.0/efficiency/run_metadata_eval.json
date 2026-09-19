@@ -1,0 +1,12 @@
+{
+  "script": "eval_ckpt.py",
+  "num_ref_params": 8030261248,
+  "num_value_params": 1235816448,
+  "ref_model_id": "meta-llama/Meta-Llama-3-8B-Instruct",
+  "classifier_ckpt_path": "/scratch/user/saratb_tamu.edu/research/pita/math_reasoning/qsharp_hf/round2_ckpt",
+  "eta": 4.0,
+  "top_k": 20,
+  "temperature": 0.8,
+  "max_new_tokens": 1024,
+  "start_time_unix": 1784965384.0786667
+}

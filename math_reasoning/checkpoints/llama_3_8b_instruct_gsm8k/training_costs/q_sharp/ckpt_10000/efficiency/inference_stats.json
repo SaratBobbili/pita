@@ -1,0 +1,14 @@
+{
+  "total_examples": 10552,
+  "total_prompt_tokens": 854392,
+  "total_generated_tokens": 1498419,
+  "inference_wall_time_sec": 10067.987961292272,
+  "avg_example_time_sec": 0.9541307772263337,
+  "avg_generated_tokens": 142.00331690674753,
+  "tokens_per_sec": 148.83003493457406,
+  "total_ref_only_flops_est": 2.4065392057933824e+16,
+  "total_guided_flops_est": 1.4205911571345931e+17,
+  "guidance_overhead_ratio_flops": 5.903045974546074,
+  "num_ref_params": 8030261248,
+  "num_value_params": 1235816448
+}

@@ -1,0 +1,10 @@
+{
+  "script": "train_classifier.py",
+  "world_size": 1,
+  "num_trainable_params": 1235816448,
+  "num_total_params": 1235816448,
+  "ref_model_id": "meta-llama/Meta-Llama-3-8B-Instruct",
+  "classifier_model_id": "meta-llama/Llama-3.2-1B-Instruct",
+  "dtype": "bfloat16",
+  "start_time_unix": 1774754817.540233
+}

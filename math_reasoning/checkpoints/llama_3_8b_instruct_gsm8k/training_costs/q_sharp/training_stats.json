@@ -1,0 +1,19 @@
+{
+  "wall_clock_time_sec": 1550.9948298931122,
+  "gpu_hours": 0.4308318971925312,
+  "world_size": 1,
+  "num_trainable_params": 1235816448,
+  "num_total_params": 1235816448,
+  "optimizer_steps": 10090,
+  "global_step": 10090,
+  "total_examples": 80720.0,
+  "total_tokens": 17974182.0,
+  "total_loss_tokens": 5865570.0,
+  "total_flops_trainable_est": 1.3327673852967322e+17,
+  "total_flops_total_est": 1.3327673852967322e+17,
+  "avg_example_time_sec": 0.019214504830192172,
+  "avg_token_time_sec": 8.629014827451464e-05,
+  "examples_per_sec": 52.04401616578107,
+  "tokens_per_sec": 11588.80845607893,
+  "peak_memory_allocated_bytes": 39804136448
+}

@@ -1,0 +1,11 @@
+{
+  "num_examples": 8529,
+  "num_samples": 1,
+  "ppl_source": "reference",
+  "total_comparisons": 8529,
+  "wins": 4785,
+  "win_rate": 0.5610270840661273,
+  "per_repeat_win_rate": [
+    0.5610270840661273
+  ]
+}
